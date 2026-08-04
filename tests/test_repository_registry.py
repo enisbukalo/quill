@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -196,3 +197,44 @@ def test_discovery_skips_forks_and_archived(monkeypatch: pytest.MonkeyPatch) -> 
     names = [c["nameWithOwner"] for c in repository_registry._accessible_repositories()]
 
     assert names == ["o/live"]
+
+
+def test_stale_snapshot_triggers_a_background_rescan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discovery ran only at service start, so a repository added — or access to one granted —
+    afterwards stayed invisible until someone restarted the service."""
+    from quill_api import repository_registry
+
+    registry = repository_registry.ConfiguredRepositoryRegistry(tmp_path / "cache.json")
+    started: list[bool] = []
+    monkeypatch.setattr(registry, "refresh_async", lambda: started.append(True))
+
+    registry._scanned_at = time.time() - 10_000
+    registry.refresh_if_stale()
+    assert started == [True], "an old snapshot must kick off a rescan"
+
+
+def test_fresh_snapshot_does_not_rescan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The read path runs on every UI poll; it must not hammer GitHub."""
+    from quill_api import repository_registry
+
+    registry = repository_registry.ConfiguredRepositoryRegistry(tmp_path / "cache.json")
+    started: list[bool] = []
+    monkeypatch.setattr(registry, "refresh_async", lambda: started.append(True))
+
+    registry._scanned_at = time.time()
+    registry.refresh_if_stale()
+    assert started == [], "a fresh snapshot must be served as-is"
+
+
+def test_never_scanned_registry_rescans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from quill_api import repository_registry
+
+    registry = repository_registry.ConfiguredRepositoryRegistry(tmp_path / "cache.json")
+    started: list[bool] = []
+    monkeypatch.setattr(registry, "refresh_async", lambda: started.append(True))
+
+    registry._scanned_at = None
+    registry.refresh_if_stale()
+    assert started == [True]

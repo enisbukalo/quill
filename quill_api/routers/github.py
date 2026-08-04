@@ -66,8 +66,16 @@ def _gh(*args: str) -> object:
 
 @router.get("/repositories")
 def repositories(services: ServicesDep) -> GitHubRepositoryList:
-    """Cached source repositories whose default branch contains ``quillfolio.toml``."""
+    """Cached source repositories whose default branch contains ``quillfolio.toml``.
+
+    A stale snapshot kicks off a background rescan before answering. Discovery otherwise ran
+    exactly once per service start, so a repository added — or access to one granted — after
+    boot stayed invisible until someone restarted the service, with no way to tell from the UI
+    that the list was simply old. The response still comes from the cache, so this never blocks
+    on GitHub; the newer list arrives on the next poll.
+    """
     _ensure_gh()
+    services.repositories.refresh_if_stale()
     viewer = _gh("api", "user")
     if not isinstance(viewer, dict):
         raise HTTPException(

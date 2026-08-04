@@ -16,6 +16,12 @@ from typing import Any, cast
 from quill.config import CONFIG_FILENAME
 
 
+#: How old a discovery snapshot may get before a read triggers a background rescan. Discovery
+#: costs a handful of REST calls, so this can be short; the value only bounds how long a newly
+#: added — or newly granted — repository stays invisible.
+_CACHE_MAX_AGE_S = 300.0
+
+
 class RepositoryScanError(RuntimeError):
     """GitHub repository discovery could not complete."""
 
@@ -99,6 +105,18 @@ class ConfiguredRepositoryRegistry:
             self._scanned_at = scanned_at
             self._error = None
         return tuple(found)
+
+    def refresh_if_stale(self, max_age_s: float = _CACHE_MAX_AGE_S) -> None:
+        """Start a background rescan when the snapshot has aged past ``max_age_s``.
+
+        Cheap to call on every read: it only inspects a timestamp, and
+        :meth:`refresh_async` already refuses to start a second concurrent scan.
+        """
+        with self._lock:
+            scanned_at = self._scanned_at
+        if scanned_at is not None and (time.time() - scanned_at) < max_age_s:
+            return
+        self.refresh_async()
 
     def refresh_async(self) -> None:
         """Refresh in the background while immediately serving the persisted snapshot."""
