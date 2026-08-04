@@ -1197,6 +1197,7 @@ test("terminal history without a legacy verdict is not presented as active", asy
 
 test("overview shows lifetime stats while run detail keeps the phase graph", async () => {
   const app = await readFile(new URL("../../quill_api/web/app.mjs", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../../quill_api/web/styles.css", import.meta.url), "utf8");
   assert.doesNotMatch(app, /phaseGraphOpen|graph-toggle|aria-expanded/);
   const overview = app.slice(app.indexOf("function renderOverview({"), app.indexOf("function eventLine"));
   assert.match(overview, /append\(fragment, renderOverviewRunPulse\(\)\);[\s\S]*append\(fragment, renderLifetimeStats\(\)\)/);
@@ -1228,6 +1229,13 @@ test("overview shows lifetime stats while run detail keeps the phase graph", asy
   assert.match(app, /phase-node-duration/);
   assert.match(app, /duration\.dataset\.livePhaseStarted/);
   assert.match(app, /duration\.dataset\.livePhaseBase/);
+  assert.match(app, /const currentModel = phase === run\.phase \? run\.model : null/);
+  assert.match(app, /currentModel \|\| modelLoad\?\.model \|\| null/);
+  assert.match(app, /MODEL · NOT REPORTED/);
+  assert.match(styles, /\.current-phase-identity strong \{[^}]*color: var\(--cyan\)/);
+  assert.match(styles, /\.current-phase-duration \{ color: var\(--violet\); \}/);
+  assert.match(styles, /\.current-phase-tokens \{ color: var\(--magenta\); \}/);
+  assert.match(styles, /\.current-phase-tools \{ color: var\(--green\); \}/);
   assert.match(app, /"text-anchor": "middle"/);
   assert.doesNotMatch(app, /class: "phase-node-label"/);
 });

@@ -377,16 +377,28 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .overview-pulse-stack { display: grid; gap: 1rem; }
 .overview-run-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: stretch; }
 .overview-run-row > .panel { min-height: 148px; }
-.current-phase-panel { border-color: rgba(155,108,255,.38); }
+.current-phase-panel {
+  border-color: rgba(69,239,255,.4);
+  background:
+    radial-gradient(circle at 8% 20%, rgba(155,108,255,.16), transparent 14rem),
+    radial-gradient(circle at 92% 90%, rgba(69,239,255,.09), transparent 13rem),
+    linear-gradient(150deg, rgba(19,12,48,.96), rgba(7,5,20,.94));
+}
 .current-phase-link { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
 .current-phase-link:hover, .current-phase-link:focus-visible { border-color: rgba(69,239,255,.58); background: linear-gradient(150deg, rgba(19,20,52,.96), rgba(8,7,28,.94)); outline: none; }
 .current-phase-empty { min-height: 88px; display: grid; place-items: center; color: var(--muted); font-size: .76rem; }
 .current-phase-list { display: grid; gap: .55rem; }
-.current-phase-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .58rem .65rem; border-left: 2px solid var(--cyan); border-radius: 5px; background: rgba(69,239,255,.045); }
+.current-phase-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .64rem .7rem; border: 1px solid rgba(69,239,255,.22); border-left: 3px solid var(--cyan); border-radius: 7px; background: linear-gradient(100deg, rgba(69,239,255,.09), rgba(155,108,255,.055) 58%, rgba(255,79,216,.045)); box-shadow: inset 0 0 24px rgba(69,239,255,.025); }
+.current-phase-row[data-state="active"] { color: var(--cyan); }
 .current-phase-identity { display: grid; min-width: 0; gap: .18rem; }
-.current-phase-identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; }
+.current-phase-identity strong { overflow: hidden; color: var(--cyan); text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; text-shadow: 0 0 12px rgba(69,239,255,.28); }
 .current-phase-identity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .61rem; }
+.current-phase-model { color: var(--violet); letter-spacing: .035em; }
 .current-phase-metrics { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .38rem; color: var(--muted); font-size: .64rem; }
+.current-phase-metric { padding: .2rem .4rem; border: 1px solid currentColor; border-radius: 999px; background: rgba(4,3,16,.4); }
+.current-phase-duration { color: var(--violet); }
+.current-phase-tokens { color: var(--magenta); }
+.current-phase-tools { color: var(--green); }
 .current-phase-activity { min-height: 86px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-content: center; align-items: center; gap: .55rem; }
 .current-phase-activity > span:last-child { grid-column: 1 / -1; }
 .pulse-visual { position: relative; width: 108px; height: 108px; margin: auto; display: grid; place-items: center; }

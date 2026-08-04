@@ -892,10 +892,11 @@ function activePhaseRows(run) {
         || (phase === run.phase ? usage.phase_usage : {})
         || {};
       const modelLoad = [...(run.model_loads || [])].reverse().find((load) => load.phase === phase);
+      const currentModel = phase === run.phase ? run.model : null;
       return {
         phase,
         label: nodes.get(phase)?.label || (phase === run.phase ? run.phase_label : null) || phase,
-        model: modelLoad?.model || "—",
+        model: currentModel || modelLoad?.model || null,
         startedAt,
         tokens: phaseUsage.context_window_tokens ?? phaseUsage.total_tokens ?? 0,
         tools: phaseUsage.tool_calls_total ?? 0,
@@ -942,18 +943,23 @@ function renderCurrentPhase(run = activeDisplayRun()) {
   const list = element("div", "current-phase-list");
   for (const item of rows) {
     const row = element("div", "current-phase-row");
+    row.dataset.state = "active";
     row.dataset.livePhaseRunId = run.run_id;
     row.dataset.livePhaseId = item.phase;
     row.dataset.livePhasePriorTokens = "0";
     const identity = element("div", "current-phase-identity");
-    append(identity, element("strong", "", item.label), element("span", "mono muted", item.model));
+    append(
+      identity,
+      element("strong", "", item.label),
+      element("span", "current-phase-model mono", item.model ? `MODEL · ${item.model}` : "MODEL · NOT REPORTED"),
+    );
     const metrics = element("div", "current-phase-metrics");
-    const duration = element("span", "mono", formatDuration(0));
+    const duration = element("span", "current-phase-metric current-phase-duration mono", formatDuration(0));
     duration.dataset.livePhaseStarted = String(item.startedAt);
-    const tokens = element("span", "mono", `${formatNumber(item.tokens)} tokens`);
+    const tokens = element("span", "current-phase-metric current-phase-tokens mono", `${formatNumber(item.tokens)} tokens`);
     tokens.dataset.livePhaseTokens = "true";
     tokens.dataset.tokenSuffix = " tokens";
-    const tools = element("span", "mono", `${formatNumber(item.tools)} tools`);
+    const tools = element("span", "current-phase-metric current-phase-tools mono", `${formatNumber(item.tools)} tools`);
     tools.dataset.livePhaseToolsSummary = "true";
     tools.dataset.toolSuffix = " tools";
     append(metrics, badge("active"), duration, tokens, tools);
