@@ -71,26 +71,7 @@ class ConfiguredRepositoryRegistry:
     def refresh(self) -> tuple[ConfiguredRepository, ...]:
         """Replace the cache only after a complete GitHub scan succeeds."""
         try:
-            viewer = _gh("api", "user")
-            login = viewer.get("login") if isinstance(viewer, dict) else None
-            if not isinstance(login, str) or not login:
-                raise RepositoryScanError("GitHub user response is missing login")
-            raw = _gh(
-                "repo",
-                "list",
-                login,
-                "--source",
-                "--no-archived",
-                "--limit",
-                "100",
-                "--json",
-                "nameWithOwner,visibility,updatedAt,defaultBranchRef",
-            )
-            if not isinstance(raw, list):
-                raise RepositoryScanError("GitHub repository list is invalid")
-            candidates: list[dict[str, Any]] = [
-                cast(dict[str, Any], item) for item in raw if isinstance(item, dict)
-            ]
+            candidates = _accessible_repositories()
             found: list[ConfiguredRepository] = []
             with ThreadPoolExecutor(max_workers=min(8, max(1, len(candidates)))) as pool:
                 futures = {pool.submit(_configured, item): item for item in candidates}
@@ -147,6 +128,40 @@ class ConfiguredRepositoryRegistry:
         with self._lock:
             self._repositories = repositories
             self._scanned_at = float(scanned_at) if isinstance(scanned_at, (int, float)) else None
+
+
+def _accessible_repositories() -> list[dict[str, Any]]:
+    """Every non-fork, non-archived repository the authenticated token can reach.
+
+    Deliberately ``affiliation=owner,collaborator`` over ``gh repo list <login>``: that command
+    lists repositories a login *owns*, so a service authenticating as a dedicated automation
+    account — which reaches its targets as a collaborator, never as the owner — discovers
+    nothing at all. Using REST also keeps discovery off the GraphQL quota, which the project
+    board watcher already spends heavily.
+
+    The result is normalised to the field names :func:`_configured` reads, so the shape does not
+    depend on which GitHub API supplied it.
+    """
+    raw = _gh("api", "user/repos?affiliation=owner,collaborator&per_page=100")
+    if not isinstance(raw, list):
+        raise RepositoryScanError("GitHub repository list is invalid")
+    candidates: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        item = cast(dict[str, Any], entry)
+        if item.get("fork") or item.get("archived"):
+            continue
+        branch = item.get("default_branch")
+        candidates.append(
+            {
+                "nameWithOwner": item.get("full_name"),
+                "visibility": item.get("visibility", ""),
+                "updatedAt": item.get("updated_at", ""),
+                "defaultBranchRef": {"name": branch} if isinstance(branch, str) else None,
+            }
+        )
+    return candidates
 
 
 def _configured(item: dict[str, Any]) -> ConfiguredRepository | None:

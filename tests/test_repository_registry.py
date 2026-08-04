@@ -139,3 +139,60 @@ def test_current_cache_normalizes_collection_fields(tmp_path: Path) -> None:
     assert repository.project_board == "Board"
     assert repository.excluded_issue_labels == ("epic", "blocked")
     assert repository.default_workflow == "feature"
+
+
+def test_discovery_includes_repositories_reached_as_a_collaborator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression that hid every repo from the runs tab.
+
+    A dedicated automation account owns nothing — it reaches its targets as a collaborator. The
+    previous ``gh repo list <login>`` listed only *owned* repositories, so discovery silently
+    returned an empty set the moment the service authenticated as that account.
+    """
+    from quill_api import repository_registry
+
+    captured: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str) -> object:
+        captured.append(args)
+        return [
+            {
+                "full_name": "owner/collaborated",
+                "visibility": "public",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "default_branch": "main",
+                "fork": False,
+                "archived": False,
+            }
+        ]
+
+    monkeypatch.setattr(repository_registry, "_gh", fake_gh)
+    candidates = repository_registry._accessible_repositories()
+
+    assert "affiliation=owner,collaborator" in captured[0][1]
+    assert not any(arg == "list" for args in captured for arg in args), "must not use gh repo list"
+    assert candidates == [
+        {
+            "nameWithOwner": "owner/collaborated",
+            "visibility": "public",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "defaultBranchRef": {"name": "main"},
+        }
+    ]
+
+
+def test_discovery_skips_forks_and_archived(monkeypatch: pytest.MonkeyPatch) -> None:
+    from quill_api import repository_registry
+
+    def fake_gh(*_args: str) -> object:
+        return [
+            {"full_name": "o/fork", "default_branch": "main", "fork": True, "archived": False},
+            {"full_name": "o/old", "default_branch": "main", "fork": False, "archived": True},
+            {"full_name": "o/live", "default_branch": "main", "fork": False, "archived": False},
+        ]
+
+    monkeypatch.setattr(repository_registry, "_gh", fake_gh)
+    names = [c["nameWithOwner"] for c in repository_registry._accessible_repositories()]
+
+    assert names == ["o/live"]

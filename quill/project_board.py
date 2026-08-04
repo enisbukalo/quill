@@ -14,21 +14,28 @@ PROJECT_LIST_LIMIT = 1_000
 PROJECT_ITEM_LIMIT = 10_000
 PROJECT_FIELD_LIMIT = 1_000
 
-_ISSUE_HIERARCHY_QUERY = """
-query($owner: String!, $name: String!, $endCursor: String) {
-  repository(owner: $owner, name: $name) {
-    issues(first: 100, after: $endCursor) {
-      nodes {
+#: Labels requested per issue. GitHub scores a GraphQL call on the nodes it is *asked* for, not
+#: the nodes returned, and this connection is nested inside a 100-issue page — so every unit here
+#: costs 100 nodes. Requesting 100 made a single page ~10,100 nodes (~101 points) against a
+#: 5,000/hour budget, which a polling watcher exhausts in minutes. Real issues carry a handful of
+#: labels; this ceiling is a safety margin, not an expectation.
+_LABELS_PER_ISSUE = 10
+
+_ISSUE_HIERARCHY_QUERY = f"""
+query($owner: String!, $name: String!, $endCursor: String) {{
+  repository(owner: $owner, name: $name) {{
+    issues(first: 100, after: $endCursor) {{
+      nodes {{
         number
         title
         state
-        labels(first: 100) { nodes { name } }
-        parent { number title state }
-      }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
+        labels(first: {_LABELS_PER_ISSUE}) {{ nodes {{ name }} }}
+        parent {{ number title state }}
+      }}
+      pageInfo {{ hasNextPage endCursor }}
+    }}
+  }}
+}}
 """.strip()
 
 

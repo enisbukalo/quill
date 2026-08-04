@@ -380,3 +380,20 @@ def test_derive_branch_name_matches_browser_rules(
     expected: str,
 ) -> None:
     assert derive_branch_name(ticket, title, labels, excluded) == expected
+
+
+def test_issue_query_node_cost_stays_within_the_graphql_budget() -> None:
+    """GitHub scores a GraphQL call on the nodes it is *asked* for, not the nodes returned.
+
+    This connection is nested inside a 100-issue page, so each requested label costs 100 nodes.
+    At `labels(first: 100)` a single page was ~10,100 nodes (~101 points); a watcher polling that
+    exhausts the 5,000/hour budget in minutes and takes every other GraphQL caller down with it.
+    """
+    from quill.project_board import _ISSUE_HIERARCHY_QUERY, _LABELS_PER_ISSUE
+
+    assert _LABELS_PER_ISSUE <= 20, "nested page size drives the whole query's rate-limit cost"
+    assert f"labels(first: {_LABELS_PER_ISSUE})" in _ISSUE_HIERARCHY_QUERY
+
+    issues_per_page = 100
+    nodes = issues_per_page + issues_per_page * _LABELS_PER_ISSUE
+    assert nodes <= 2_000, f"one page requests {nodes} nodes; keep the polling cost low"

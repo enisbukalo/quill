@@ -300,3 +300,54 @@ def test_oldest_one_ticket_batch_precedes_later_multi_ticket_batch(tmp_path: Pat
         history.stabilize_project_queue_batch(batch_id)
     claimed = history.claim_project_queue_head()
     assert claimed is not None and claimed.ticket == 9
+
+
+def test_poll_interval_backs_off_while_the_board_is_unchanged(
+    setup: tuple[ProjectQueueCoordinator, History, FakeBoard, list[RunState], list[float]],
+) -> None:
+    """Board polling is the service's dominant GraphQL cost, and an idle board answers every
+    poll identically — so an untouched board must stop asking at full rate."""
+    coordinator, _history, _board, _admitted, _now = setup
+
+    assert coordinator.poll_interval() == 5
+
+    coordinator._idle_polls = 1
+    assert coordinator.poll_interval() == 10
+    coordinator._idle_polls = 2
+    assert coordinator.poll_interval() == 20
+
+
+def test_poll_interval_is_capped(
+    setup: tuple[ProjectQueueCoordinator, History, FakeBoard, list[RunState], list[float]],
+) -> None:
+    """A quiet board must still be looked at, or a ticket added during a lull is stranded.
+
+    Two independent limits bind here. The doubling count caps growth relative to the configured
+    interval, and the absolute ceiling caps it in wall-clock terms; whichever is lower wins.
+    """
+    coordinator, _history, _board, _admitted, _now = setup
+
+    # interval_s=5: four doublings (80s) is reached before the 300s ceiling.
+    coordinator._idle_polls = 10_000
+    assert coordinator.poll_interval() == 80
+
+    # A larger configured interval hits the absolute ceiling instead of doubling past it.
+    coordinator._interval_s = 60
+    assert coordinator.poll_interval() == 300.0
+
+
+def test_a_change_resets_the_backoff(
+    setup: tuple[ProjectQueueCoordinator, History, FakeBoard, list[RunState], list[float]],
+) -> None:
+    """Work flowing means the next event is likely imminent — responsiveness must return at once,
+    not decay back over several polls."""
+    coordinator, _history, _board, _admitted, _now = setup
+    coordinator._idle_polls = 4
+    assert coordinator.poll_interval() > 5
+
+    before = coordinator._revision
+    coordinator._changed()
+
+    assert coordinator._revision != before, "_changed must signal the poll loop"
+    coordinator._idle_polls = 0
+    assert coordinator.poll_interval() == 5

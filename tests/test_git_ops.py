@@ -6,6 +6,7 @@ metadata, flattens update feedback, and repairs a missing closing-ticket referen
 
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from collections.abc import Sequence
@@ -719,3 +720,22 @@ def test_failed_check_log_is_size_bounded() -> None:
     out = GitOps(run=run).failed_check_log("1")
     assert len(out) <= 16000 + 40  # budget plus the short truncation marker
     assert "truncated" in out
+
+
+def test_review_thread_query_node_cost_is_bounded() -> None:
+    """`comments(first:N)` is nested inside a 100-thread page, so each unit costs 100 nodes.
+
+    Only the comment IDs are read, to map a comment back to its thread — there is no reason to
+    request a hundred of them per thread and pay for nodes that are never used.
+    """
+    import re
+
+    from quill.git_ops import GitOps
+
+    source = inspect.getsource(GitOps)
+    threads = re.search(r"reviewThreads\(first:(\d+)", source)
+    comments = re.search(r"comments\(first:(\d+)", source)
+    assert threads and comments, "review-thread query shape changed; re-check its node cost"
+
+    nodes = int(threads.group(1)) + int(threads.group(1)) * int(comments.group(1))
+    assert nodes <= 2_100, f"query requests {nodes} nodes per page; keep the rate-limit cost low"

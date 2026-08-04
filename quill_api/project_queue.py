@@ -29,6 +29,13 @@ from quill_api.schemas import (
 )
 from quill_api.state import RunState, RunStatus, RunStore
 
+#: Ceiling on the idle backoff. A board nobody is touching still gets looked at every few
+#: minutes, so a ticket added while the service was quiet is never stranded indefinitely.
+_MAX_IDLE_INTERVAL_S = 300.0
+#: How many times the interval may double. Caps the growth independently of the ceiling so a
+#: large configured interval cannot overshoot it in a single step.
+_BACKOFF_DOUBLINGS = 4
+
 
 class BoardBoundary(Protocol):
     def catalog(
@@ -99,6 +106,10 @@ class ProjectQueueCoordinator:
         self._enabled = enabled
         self._clock = clock
         self._observed: dict[str, _ObservedQueue] = {}
+        #: Bumped by :meth:`_changed`. The poll loop compares it across a scan to tell a poll that
+        #: saw real board movement from one that spent GraphQL quota to learn nothing.
+        self._revision = 0
+        self._idle_polls = 0
         # REST mutations and the watcher share one cached Project client. Serializing their board
         # reads prevents a candidate refresh from racing a five-second reconciliation pass.
         self._lock = threading.RLock()
@@ -468,14 +479,33 @@ class ProjectQueueCoordinator:
         )
 
     def _changed(self) -> None:
+        self._revision += 1
         self._publish()
 
+    def poll_interval(self) -> float:
+        """Seconds to wait before the next scan, backing off while the board sits still.
+
+        Board polling is the service's dominant GraphQL cost, and an idle board answers every
+        poll identically. Doubling the wait after each unchanged scan keeps the responsive
+        interval for the case that matters — a ticket moved, a run just finished — while an
+        untouched board settles to :data:`_MAX_IDLE_INTERVAL_S` instead of asking forever at
+        full rate. Any change resets it immediately.
+        """
+        if self._idle_polls <= 0:
+            return float(self._interval_s)
+        backed_off = float(self._interval_s) * float(2 ** min(self._idle_polls, _BACKOFF_DOUBLINGS))
+        return min(backed_off, _MAX_IDLE_INTERVAL_S)
+
     def _run(self) -> None:
-        while not self._stopping.wait(self._interval_s):
+        while not self._stopping.wait(self.poll_interval()):
+            before = self._revision
             try:
                 self.scan_once()
             except Exception:  # noqa: BLE001 - one poll must never kill durable scheduling
                 continue
+            # A scan that changed nothing is evidence the board is quiet; one that did means work
+            # is flowing and the next event is likely imminent.
+            self._idle_polls = 0 if self._revision != before else self._idle_polls + 1
 
     def _item_info(self, item: ProjectQueueItem) -> ProjectQueueItemInfo:
         board_status = item.last_board_status or ""

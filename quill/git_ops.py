@@ -412,7 +412,11 @@ class GitOps:
             owner, name = str(repo_data["nameWithOwner"]).split("/", 1)
         except (ValueError, KeyError) as exc:
             raise GitError("could not resolve repository identity for review threads") from exc
-        query = """query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved viewerCanResolve comments(first:100){nodes{id}}}}}}}"""
+        # `comments(first:N)` is nested inside a 100-thread page, so each unit costs 100 nodes.
+        # Asking for 100 made one page ~10,100 nodes; GitHub scores requested nodes, not returned
+        # ones. Only the comment IDs are used, to map a comment back to its thread — and a review
+        # thread with more than 20 comments is vanishingly rare.
+        query = """query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved viewerCanResolve comments(first:20){nodes{id}}}}}}}"""
         after = ""
         metadata: dict[str, tuple[str, bool, bool]] = {}
         while True:
