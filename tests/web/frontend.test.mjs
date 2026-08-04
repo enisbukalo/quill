@@ -56,6 +56,17 @@ import {
   selfLoopLayout,
 } from "../../quill_api/web/phase-graph.mjs";
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
+import { linearTrend } from "../../quill_api/web/trends.mjs";
+
+test("run trend uses a least-squares line and never projects below zero", () => {
+  assert.deepEqual(linearTrend([]), []);
+  assert.deepEqual(linearTrend([7]), [7]);
+  assert.deepEqual(linearTrend([10, 20, 30]), [10, 20, 30]);
+  const descending = linearTrend([30, 10, 0]);
+  assert.ok(Math.abs(descending[0] - 28.3333) < 0.001);
+  assert.ok(Math.abs(descending[1] - 13.3333) < 0.001);
+  assert.equal(descending[2], 0);
+});
 
 test("workflow refresh preserves valid run model overrides", () => {
   const phases = [
@@ -1718,9 +1729,12 @@ test("queue navigation, grouped selection, SSE, and overview snapshot are wired"
   assert.match(app, /Object\.entries\(run\.active_phases \|\| \{\}\)/);
   assert.match(app, /phaseUsage\.context_window_tokens \?\? phaseUsage\.total_tokens/);
   assert.match(styles, /\.overview-run-row \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(styles, /\.stats-trends \{ grid-column: span 3; \}/);
+  assert.match(styles, /\.stats-trends \{ grid-column: 1 \/ -1; \}/);
   assert.match(styles, /\.stats-project-queue \{ grid-column: span 3; \}/);
-  assert.match(styles, /\.trend-grid \{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(styles, /\.trend-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(app, /Completed runs \(oldest → newest\)/);
+  assert.match(app, /linearTrend\(values\)/);
+  assert.match(styles, /\.sparkline-trend \{[^}]*stroke-dasharray:/);
 });
 
 test("startup loads data for the route it lands on", async () => {

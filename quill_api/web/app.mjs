@@ -40,6 +40,7 @@ import {
   selfLoopLayout,
 } from "./phase-graph.mjs";
 import { reconcileModelOverrides } from "./run-model-overrides.mjs";
+import { linearTrend } from "./trends.mjs";
 
 const main = document.querySelector("#main");
 const toastRegion = document.querySelector("#toast-region");
@@ -1752,8 +1753,8 @@ function renderLifetimeStats() {
     const trendGrid = element("div", "trend-grid");
     append(
       trendGrid,
-      sparkline("Tokens per run", stats.recent_runs, "total_tokens", formatNumber),
-      sparkline("Duration per run", stats.recent_runs, "duration_s", formatDuration),
+      sparkline("Tokens per run", "Total tokens", stats.recent_runs, "total_tokens", formatNumber),
+      sparkline("Duration per run", "Elapsed time", stats.recent_runs, "duration_s", formatDuration),
     );
     trends.append(trendGrid);
   }
@@ -1862,28 +1863,81 @@ function proportionalStat(label, value, maximum, display, note = "") {
   return result;
 }
 
-function sparkline(label, points, field, formatter) {
+function sparkline(label, yAxisLabel, points, field, formatter) {
   const result = element("div", "sparkline-card");
   const values = points.map((item) => Math.max(0, Number(item[field]) || 0));
   const maximum = Math.max(...values, 1);
-  const width = 420;
-  const height = 105;
+  const width = 560;
+  const height = 190;
+  const plot = { left: 68, right: 548, top: 12, bottom: 150 };
   const coordinates = values.map((value, index) => {
-    const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
-    const y = height - 8 - (value / maximum) * (height - 16);
+    const x = values.length === 1
+      ? (plot.left + plot.right) / 2
+      : plot.left + (index / (values.length - 1)) * (plot.right - plot.left);
+    const y = plot.bottom - (value / maximum) * (plot.bottom - plot.top);
     return [x, y];
   });
-  const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": label });
-  const areaPoints = [`0,${height}`, ...coordinates.map(([x, y]) => `${x},${y}`), `${width},${height}`].join(" ");
-  append(svg, svgElement("polygon", { points: areaPoints, class: "sparkline-area" }), svgElement("polyline", { points: coordinates.map(([x, y]) => `${x},${y}`).join(" "), class: "sparkline-line" }));
+  const svg = svgElement("svg", {
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+    "aria-label": `${label}: ${yAxisLabel} by completed run, oldest to newest`,
+  });
+  for (const value of [maximum, maximum / 2, 0]) {
+    const y = plot.bottom - (value / maximum) * (plot.bottom - plot.top);
+    const tick = svgElement("text", { x: plot.left - 8, y: y + 4, class: "sparkline-tick", "text-anchor": "end" });
+    tick.textContent = formatter(value);
+    append(svg, svgElement("line", { x1: plot.left, x2: plot.right, y1: y, y2: y, class: "sparkline-grid-line" }), tick);
+  }
+  const yTitle = svgElement("text", {
+    x: 14,
+    y: (plot.top + plot.bottom) / 2,
+    class: "sparkline-axis-title",
+    transform: `rotate(-90 14 ${(plot.top + plot.bottom) / 2})`,
+    "text-anchor": "middle",
+  });
+  yTitle.textContent = yAxisLabel;
+  const xTitle = svgElement("text", { x: (plot.left + plot.right) / 2, y: height - 3, class: "sparkline-axis-title", "text-anchor": "middle" });
+  xTitle.textContent = "Completed runs (oldest → newest)";
+  append(svg, yTitle, xTitle);
+  const xTicks = values.length === 1 ? [[coordinates[0][0], "Run 1"]] : [
+    [plot.left, "Run 1"],
+    [plot.right, `Run ${values.length}`],
+  ];
+  for (const [x, text] of xTicks) {
+    const tick = svgElement("text", { x, y: plot.bottom + 17, class: "sparkline-tick", "text-anchor": "middle" });
+    tick.textContent = text;
+    append(svg, svgElement("line", { x1: x, x2: x, y1: plot.bottom, y2: plot.bottom + 4, class: "sparkline-axis" }), tick);
+  }
+  append(svg, svgElement("line", { x1: plot.left, x2: plot.left, y1: plot.top, y2: plot.bottom, class: "sparkline-axis" }));
+  const areaPoints = [`${coordinates[0][0]},${plot.bottom}`, ...coordinates.map(([x, y]) => `${x},${y}`), `${coordinates.at(-1)[0]},${plot.bottom}`].join(" ");
+  append(
+    svg,
+    svgElement("polygon", { points: areaPoints, class: "sparkline-area" }),
+    svgElement("polyline", { points: coordinates.map(([x, y]) => `${x},${y}`).join(" "), class: "sparkline-line" }),
+  );
+  if (values.length > 1) {
+    const trendCoordinates = linearTrend(values).map((value, index) => [
+      coordinates[index][0],
+      plot.bottom - (Math.min(value, maximum) / maximum) * (plot.bottom - plot.top),
+    ]);
+    append(svg, svgElement("polyline", { points: trendCoordinates.map(([x, y]) => `${x},${y}`).join(" "), class: "sparkline-trend" }));
+  }
   coordinates.forEach(([cx, cy], index) => {
-    const dot = svgElement("circle", { cx, cy, r: 3, class: "sparkline-dot", "data-status": points[index].status });
+    const dot = svgElement("circle", { cx, cy, r: 4, class: "sparkline-dot", "data-status": points[index].status });
     dot.append(svgElement("title"));
-    dot.firstChild.textContent = `${points[index].run_id}: ${formatter(values[index])}`;
+    dot.firstChild.textContent = `Run ${index + 1} · ${points[index].run_id} · ${points[index].status}: ${formatter(values[index])}`;
     svg.append(dot);
   });
   const latest = values.at(-1) || 0;
-  append(result, element("div", "sparkline-header", label), svg, element("div", "sparkline-latest mono", `Latest ${formatter(latest)}`));
+  const header = element("div", "sparkline-header");
+  const legend = element("div", "sparkline-legend");
+  append(
+    legend,
+    element("span", "sparkline-legend-item", "Per run"),
+    element("span", "sparkline-legend-item trend", "Trend"),
+  );
+  append(header, element("strong", "", label), legend);
+  append(result, header, svg, element("div", "sparkline-latest mono", `Latest ${formatter(latest)}`));
   return result;
 }
 
