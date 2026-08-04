@@ -1,0 +1,38 @@
+# WI-1 — inference-only phase variants + Gemma preset.
+# APPEND to ~/.workbench/models.ini. Each variant COPIES its base preset's load params
+# VERBATIM (gguf, tensor-split, ctx, cache types, n-gpu-layers, spec/draft, ...) and changes
+# ONLY the sampling block + the section name. Copy the [load] lines from your existing
+# 4GPU base presets — the load-param placeholders below MUST be filled from those bases.
+
+# ---- plan-27b : copy of "Qwen3.6-27B-Q8 MTP" base, warm sampling -------------------
+[plan-27b]
+# <-- paste the base 27B [load] params here verbatim (gguf/tensor-split/n-gpu-layers/...) -->
+ctx-size       = 250000
+temp           = 0.6
+repeat-penalty = 1.05
+presence       = 0.06
+
+# ---- review-27b : copy of "Qwen3.6-27B-Q8 MTP" base, cold sampling -----------------
+[review-27b]
+# <-- paste the same base 27B [load] params here verbatim -->
+ctx-size       = 250000
+temp           = 0.2
+repeat-penalty = 1.0
+presence       = 0.0
+
+# ---- impl-35b : copy of "Qwen_Qwen3.6-35B-A3B-Q6_K_XL MTP" base, impl sampling ------
+[impl-35b]
+# <-- paste the base 35B [load] params here verbatim -->
+ctx-size       = 200000
+temp           = 0.45
+repeat-penalty = 1.1
+presence       = 0.0
+
+# ---- gemma-4-31B-it-Q8 MTP : official Gemma sampling (do NOT force cold) ------------
+[gemma-4-31B-it-Q8 MTP]
+# <-- paste the Gemma 4 31B [load] params here (gguf/tensor-split/n-gpu-layers/...) -->
+ctx-size  = 200000
+spec-type = none
+temp      = 1.0
+top-k     = 64
+top-p     = 0.95

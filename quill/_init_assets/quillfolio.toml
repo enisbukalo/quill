@@ -1,0 +1,413 @@
+# quillvault/quillfolio.toml — quill's data-driven phase engine config.
+#
+# This is the DEFAULT written by `quill --init`. It reproduces quill's core
+# workflow: parallel research -> synthesis/gate -> plan/gate -> implement -> parallel audits/gate
+# -> build/test -> commit/PR. The working branch is
+# created and checked out for you by the server's workspace preparation before the
+# first phase runs, so there is no separate branch phase — the commit phase simply
+# pushes whatever branch is checked out. (A purely local run should create its own
+# feature branch first.)
+#
+# Everything here is data: edit it (or the personas in your machine persona library)
+# and the change is picked up on the next run. Adding, removing, reordering, or
+# renaming an LLM phase is config + .md only — no driver code change.
+
+[repo]
+# omit `name` -> derived from `git remote get-url origin` (cwd is the repo).
+# name          = "owner/repo"
+# project_board = "MyBoard"    # omit -> skip the board step
+# excluded_issue_labels = ["EPIC"] # hide matching issues and work types in the run form
+pr_base       = "main"
+
+[runner]
+# REQUIRED -- which coding-agent CLI quill drives each phase through.
+# Built-in: "opencode" or "pi". Configure that CLI's models to point at your server.
+kind = ""
+
+# Model-server backend behind the pre-spawn seam.
+#   "llamacpp" -- swap presets per phase on the llama.cpp router.
+#   "vllm"     -- one always-on model; cache clears once per run, then stays warm.
+# The shipped workflows use concurrent audit lanes, so the starter config selects vLLM.
+backend = "vllm"
+# vllm requires machine-level QUILL_VLLM_URL. Launch vllm with VLLM_SERVER_DEV_MODE=1
+# so POST /reset_prefix_cache is mounted. Never commit machine addresses here.
+
+# Optional vLLM service switching. Before every LLM phase, Quill requires the phase's model to
+# exactly match an ID from GET /v1/models. If another model is loaded, it appends the associated
+# service name to this argv and waits up to timeouts.model_load_seconds (default: 360 seconds).
+# [runner.vllm]
+# command = ["sudo", "systemctl", "start"]
+#
+# [runner.vllm.models]
+# Gemma4_31B_NVFP4 = "gemma431-nvfp4"
+# Qwen3_32B_FP8    = "qwen32b-fp8"
+
+[build]
+# REQUIRED -- never guessed. Fill these in, then re-run.
+command = ""
+test    = ""
+log_dir = "logs"
+
+[retries]            # revise-then-verify attempts. 0 = no retry (a BLOCK halts).
+default = 1          # applies to every gated phase unless overridden per-phase
+spawn   = 1          # re-spawns on CRASH / GARBAGE -- any phase
+                     # retry_budget is a per-RUN ceiling: a gate that re-enters after a
+                     # CRASH/GARBAGE resumes its remaining rounds, it does not get a fresh budget.
+
+[gates]
+# Which findings stop a gate, per revise round. Defaults (shown) reproduce historic behavior:
+# CRITICAL/MAJOR block every round.
+#
+# `retry_blocking = "repeat-only"` makes the loop converge. After the initial review a
+# non-CRITICAL finding may block only if an earlier round already reported it, so reviewers
+# re-reading revised code cannot replace the blockers just fixed with fresh ones of equal
+# severity. Late discovery is recorded as advisory instead of consuming another retry.
+# CRITICAL is exempt on every round, so a revision that breaks the build still halts the run.
+blocking_severities = ["CRITICAL", "MAJOR"]  # round 0 (the initial review)
+retry_blocking      = "same"                 # or "repeat-only"
+final_round         = ["CRITICAL", "MAJOR"]  # last round the budget allows
+
+[memory]
+# Archive gate blockers and inject every unique, later-verified lesson into planning,
+# implementation finalization, and implementation review. Build/test/CI/PR never receive it.
+enabled = false
+
+[timeouts]
+opencode_run_seconds = 5400   # per-spawn hang guard
+model_load_seconds   = 360    # model switch/load poll ceiling (6 minutes)
+
+# ---------------------------------------------------------------------------
+# Phases: an ordered array. The engine runs them top to bottom, dispatching on
+# `type`. Reorder/add/remove freely.
+#
+#   producer   - LLM writes an artifact (research, plan, impl).  persona + model
+#                Consecutive producers with one `parallel_group` run concurrently on vLLM.
+#                A later producer can `synthesizes=[...]` their current artifacts.
+#   reviewer   - LLM judges, writes findings; `models=[...]` fans out per model.
+#                `against=[producer ids]` names the artifacts it reviews against.
+#                On vLLM, nested `[[workflows.ticket.phase.audits]]` entries declare named,
+#                same-model reviewer lanes. Quill runs up to Pi's discovered model capacity,
+#                queues remaining lanes, and feeds every result to one finalizer.
+#   finalizer  - LLM reconciles N reviewers' findings + gates.   reconciles=[...]
+#   mechanical - built-in non-LLM step (only build_test) by `step`.
+#
+# Git is agent-driven: the commit phase is a producer whose persona runs git/gh itself
+# (stages, commits, pushes, and opens the PR on the currently checked-out branch). The
+# server's workspace preparation already created that branch; the driver runs no git of
+# its own — it only reads the ticket.
+#
+# Flow flags: gates, retry_budget, on_block (earlier phase to jump back to on BLOCK; normal
+# traversal then resumes through every phase until the gate is reached again). A structured gate
+# can set `selective_on_block=[...]` to rerun only owning lanes before rebuilding its synthesis.
+#
+# Skills: names your runner CLI loads before working (quill stores no skill bodies;
+# pi triggers them as `/skill:<name>`, opencode as `/<name>`). Set them up in your CLI.
+# ---------------------------------------------------------------------------
+
+[workflows]
+default = "ticket"
+
+[workflows.ticket]
+label = "New ticket"
+mode = "create"
+
+[[workflows.ticket.phase]]
+id       = "research_requirements"
+type     = "producer"
+label    = "requirements research"
+persona  = "research-requirements.md"
+model    = "plan-27b"
+skills   = ["technical-writing"]
+artifact = "research-requirements.md"
+parallel_group = "research"
+# self_check = true # requires runner.kind = "pi"
+
+[[workflows.ticket.phase]]
+id       = "research_architecture"
+type     = "producer"
+label    = "architecture research"
+persona  = "research-architecture.md"
+model    = "plan-27b"
+skills   = ["technical-writing"]
+artifact = "research-architecture.md"
+parallel_group = "research"
+# self_check = true # requires runner.kind = "pi"
+
+[[workflows.ticket.phase]]
+id       = "research_technical"
+type     = "producer"
+label    = "technical research"
+persona  = "research-technical.md"
+model    = "plan-27b"
+skills   = ["technical-writing"]
+artifact = "research-technical.md"
+parallel_group = "research"
+# self_check = true # requires runner.kind = "pi"
+
+[[workflows.ticket.phase]]
+id       = "research_synthesis"
+type     = "producer"
+label    = "research synthesis"
+persona  = "research-synthesis.md"
+model    = "plan-27b"
+skills   = ["technical-writing"]
+artifact = "research.md"
+synthesizes = ["research_requirements", "research_architecture", "research_technical"]
+
+[[workflows.ticket.phase]]
+id           = "research_gate"
+type         = "reviewer"
+label        = "research gate"
+persona      = "review-research.md"
+models       = ["review-27b"]
+against      = ["research_synthesis"]
+gates        = true
+structured_findings = true
+retry_budget = 1
+on_block     = "research_synthesis"
+selective_on_block = ["research_requirements", "research_architecture", "research_technical"]
+
+[[workflows.ticket.phase]]
+id       = "plan"
+type     = "producer"
+label    = "write plan"
+persona  = "plan.md"
+model    = "plan-27b"
+skills   = []
+artifact = "plan.md"
+inputs   = ["research_synthesis"]
+# self_check = true # requires runner.kind = "pi"
+
+[[workflows.ticket.phase]]
+id           = "review_plan"
+type         = "reviewer"
+label        = "review plan"
+persona      = "review-plan.md"
+models       = ["review-27b"]
+against      = ["plan"]
+gates        = true
+structured_findings = true
+retry_budget = 1
+on_block     = "plan"
+
+[[workflows.ticket.phase]]
+id                = "impl"
+type              = "producer"
+label             = "implement"
+persona           = "impl.md"
+model             = "impl-35b"
+skills            = []
+artifact          = "impl.md"
+inputs            = ["plan"]
+
+[[workflows.ticket.phase]]
+id           = "build_test"
+type         = "mechanical"
+step         = "build_test"
+gates        = true
+retry_budget = 1
+on_block     = "impl"
+
+[[workflows.ticket.phase]]
+id      = "review_impl"
+type    = "reviewer"
+label   = "implementation audits"
+against = ["plan", "impl"]
+structured_findings = true
+
+[[workflows.ticket.phase.audits]]
+id = "architecture"
+label = "requirements + architecture"
+persona = "review-impl-architecture.md"
+model = "review-27b"
+
+[[workflows.ticket.phase.audits]]
+id = "correctness"
+label = "correctness + lifecycle"
+persona = "review-impl-correctness.md"
+model = "review-27b"
+
+[[workflows.ticket.phase.audits]]
+id = "tests"
+label = "tests + regressions"
+persona = "review-impl-tests.md"
+model = "review-27b"
+
+[[workflows.ticket.phase]]
+id           = "review_impl_final"
+type         = "finalizer"
+label        = "implementation gate"
+persona      = "review-final.md"
+model        = "review-27b"
+reconciles   = ["review_impl"]
+gates        = true
+structured_findings = true
+retry_budget = 1
+on_block     = "impl"
+
+[[workflows.ticket.phase]]
+id       = "commit"
+type     = "producer"
+label    = "commit + push + PR"
+persona  = "commit.md"
+model    = "impl-35b"
+skills   = []
+artifact = "commit.md"
+inputs   = ["plan", "impl"]
+# ---------------------------------------------------------------------------
+# Optional: gate on GitHub Actions instead of (or as well as) a local build.
+#
+# `ci_check` waits for the PR's checks to finish, then PASSes or BLOCKs. Because
+# the work happens on GitHub's runners, the machine driving quill needs none of
+# this repo's toolchain — which is what makes a shared quill server practical.
+#
+# It must run AFTER the phase that pushes and opens the PR. Its `on_block` jumps
+# back to `impl`, then normal traversal repeats review/build/commit before CI is checked again.
+#
+# Requires a workflow triggered by `on: pull_request`. Uncomment to enable, and
+# consider dropping the local `build_test` phase above if CI covers it.
+#
+# [[workflows.ticket.phase]]
+# id           = "ci"
+# type         = "mechanical"
+# step         = "ci_check"
+# gates        = true
+# retry_budget = 1
+# on_block     = "impl"
+
+[workflows.pr_update]
+label = "Update existing PR"
+mode = "update"
+feedback_after_head = true
+resolve_review_threads = true
+
+[[workflows.pr_update.phase]]
+id = "update_scope"
+type = "producer"
+label = "scope update"
+persona = "update-scope.md"
+model = "plan-27b"
+artifact = "update-scope.md"
+# Optional for Pi: reopen update scope for one feedback-coverage audit.
+# self_check = true
+
+[[workflows.pr_update.phase]]
+id = "update_impl"
+type = "producer"
+label = "implement update"
+persona = "update-impl.md"
+model = "impl-35b"
+artifact = "update-impl.md"
+inputs = ["update_scope"]
+# Optional for Pi: reopen implementation for one bounded correction audit.
+# self_check = true
+
+[[workflows.pr_update.phase]]
+id = "test"
+type = "mechanical"
+step = "test"
+gates = true
+retry_budget = 1
+on_block = "update_impl"
+
+[[workflows.pr_update.phase]]
+id = "build"
+type = "mechanical"
+step = "build"
+gates = true
+retry_budget = 1
+on_block = "update_impl"
+
+[[workflows.pr_update.phase]]
+id = "review_update"
+type = "reviewer"
+label = "review update"
+persona = "review-update.md"
+models = ["review-27b"]
+against = ["update_scope", "update_impl"]
+gates = true
+structured_findings = true
+retry_budget = 1
+on_block = "update_impl"
+
+[[workflows.pr_update.phase]]
+id = "head_guard"
+type = "mechanical"
+step = "pr_head_guard"
+
+[[workflows.pr_update.phase]]
+id = "commit_update"
+type = "producer"
+label = "push PR update"
+persona = "commit.md"
+model = "impl-35b"
+artifact = "commit-update.md"
+inputs = ["update_scope", "update_impl"]
+
+[[workflows.pr_update.phase]]
+id = "ci"
+type = "mechanical"
+step = "ci_check"
+gates = true
+retry_budget = 1
+on_block = "update_impl"
+
+[[workflows.pr_update.phase]]
+id = "acknowledge_feedback"
+type = "mechanical"
+step = "acknowledge_pr_feedback"
+
+[workflows.pr_review]
+label = "Pull Request Review"
+mode = "review"
+
+[[workflows.pr_review.phase]]
+id = "collect_pr_evidence"
+type = "mechanical"
+label = "collect verification"
+step = "collect_pr_evidence"
+artifact = "pr-verification.md"
+
+[[workflows.pr_review.phase]]
+id = "review_pr"
+type = "reviewer"
+label = "review pull request"
+against = ["collect_pr_evidence"]
+structured_findings = true
+
+[[workflows.pr_review.phase.audits]]
+id = "requirements"
+label = "requirements"
+persona = "pr-review-requirements.md"
+model = "review-27b"
+skills = ["pull-request-review"]
+
+[[workflows.pr_review.phase.audits]]
+id = "correctness"
+label = "correctness"
+persona = "pr-review-correctness.md"
+model = "review-27b"
+skills = ["pull-request-review"]
+
+[[workflows.pr_review.phase.audits]]
+id = "architecture"
+label = "architecture"
+persona = "pr-review-architecture.md"
+model = "review-27b"
+skills = ["pull-request-review"]
+
+[[workflows.pr_review.phase]]
+id = "review_pr_final"
+type = "finalizer"
+label = "review gate"
+persona = "pr-review-final.md"
+model = "review-27b"
+skills = ["pull-request-review"]
+artifact = "pr-review.json"
+reconciles = ["review_pr"]
+
+[[workflows.pr_review.phase]]
+id = "publish_pr_review"
+type = "mechanical"
+label = "publish review"
+step = "publish_pr_review"

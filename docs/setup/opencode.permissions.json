@@ -1,0 +1,29 @@
+{
+  "_comment": "WI-5 — least-privilege per-agent permissions. Merge into opencode.json. --dangerously-skip-permissions covers the headless prompt; these per-agent blocks still bound each phase so a stray phase can't exceed its job. Producers (impl/commit) write code; judges (review*) deny code edit/write but may write their own result file; plan writes only its result file.",
+  "agent": {
+    "agent-plan": {
+      "mode": "primary",
+      "permission": { "edit": "deny", "write": "allow", "bash": "deny", "read": "allow", "skill": "allow" }
+    },
+    "agent-impl": {
+      "mode": "primary",
+      "permission": { "edit": "allow", "write": "allow", "bash": "allow", "read": "allow", "skill": "allow" }
+    },
+    "agent-commit": {
+      "mode": "primary",
+      "permission": { "edit": "allow", "write": "allow", "bash": "allow", "read": "allow", "skill": "allow" }
+    },
+    "agent-review": {
+      "mode": "primary",
+      "permission": { "edit": "deny", "write": "allow", "bash": "deny", "read": "allow", "skill": "allow" }
+    },
+    "agent-review-gemma": {
+      "mode": "primary",
+      "permission": { "edit": "deny", "write": "allow", "bash": "deny", "read": "allow", "skill": "allow" }
+    },
+    "agent-review-final": {
+      "mode": "primary",
+      "permission": { "edit": "deny", "write": "allow", "bash": "deny", "read": "allow", "skill": "allow" }
+    }
+  }
+}

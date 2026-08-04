@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#080515" />
+    <title>Quill Control Center</title>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="ambient-grid" aria-hidden="true"></div>
+    <div class="scanlines" aria-hidden="true"></div>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#/overview" aria-label="Quill overview">
+          <span class="brand-mark" aria-hidden="true">Q</span>
+          <span><strong>QUILL</strong><small>CONTROL CENTER</small></span>
+        </a>
+        <div class="signal-status" id="connection-status" data-state="connecting">
+          <span class="signal-dot" aria-hidden="true"></span>
+          <span id="connection-label">CONNECTING</span>
+        </div>
+      </header>
+      <nav class="primary-nav" aria-label="Primary navigation">
+        <a href="#/overview" data-route="overview">Overview</a>
+        <a href="#/runs" data-route="runs">Runs</a>
+        <a href="#/queue" data-route="queue">Queue</a>
+        <a href="#/workspaces" data-route="workspaces">Workspaces</a>
+        <a href="#/memories" data-route="memories">Memories</a>
+        <a href="#/personas" data-route="personas">Personas</a>
+        <a href="#/skills" data-route="skills">Skills</a>
+        <a href="#/models" data-route="models">Models</a>
+        <a href="#/settings" data-route="settings">Settings</a>
+        <a href="#/api" data-route="api">API</a>
+      </nav>
+      <main id="main" tabindex="-1">
+        <div class="boot-screen" role="status">
+          <div class="boot-logo" aria-hidden="true">Q</div>
+          <p>INITIALIZING QUILL TELEMETRY…</p>
+        </div>
+      </main>
+      <footer>
+        <span id="footer-version">QUILL</span>
+        <span id="last-updated">Awaiting first signal</span>
+      </footer>
+    </div>
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <dialog id="confirm-dialog" class="modal">
+      <form method="dialog">
+        <h2 id="confirm-title">Confirm action</h2>
+        <p id="confirm-message"></p>
+        <label id="confirm-input-wrap" hidden>
+          <span id="confirm-input-label">Confirmation</span>
+          <input id="confirm-input" autocomplete="off" />
+        </label>
+        <div class="modal-actions">
+          <button value="cancel" class="button secondary">Cancel</button>
+          <button id="confirm-submit" value="confirm" class="button danger">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+    <script type="module" src="/assets/app.mjs"></script>
+  </body>
+</html>

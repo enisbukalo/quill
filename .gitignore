@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ty_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# quill runtime
+*.db
+*.sqlite
+*.sqlite3
+pipeline-run.log
+test-log.txt
+# Per-repo user config (bootstrapped per target repo; also written when /config is hit with
+# no config in cwd). Never committed — each repo's owner fills their own.
+.shipticket.toml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Secrets / local config
+.env
+*.local.toml
+.opencode/
+.pi-subagents/
+
+# Local planning notes
+.plans/

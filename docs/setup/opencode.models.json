@@ -1,0 +1,29 @@
+{
+  "_comment": "WI-2 — merge into opencode.json under provider.llamacpp.models. Keys MUST equal the models.ini preset names. Sampling stays server-side (models.ini); only tools/reasoning/context/output here.",
+  "provider": {
+    "llamacpp": {
+      "models": {
+        "plan-27b": {
+          "tools": true,
+          "reasoning": true,
+          "limit": { "context": 250000, "output": 4096 }
+        },
+        "review-27b": {
+          "tools": true,
+          "reasoning": true,
+          "limit": { "context": 250000, "output": 4096 }
+        },
+        "impl-35b": {
+          "tools": true,
+          "reasoning": true,
+          "limit": { "context": 200000, "output": 4096 }
+        },
+        "gemma-4-31B-it-Q8 MTP": {
+          "tools": true,
+          "reasoning": true,
+          "limit": { "context": 200000, "output": 4096 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Quill">
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+  </defs>
+  <path d="M15 3H61V49L49 61H3V15Z" fill="#080515" stroke="#45efff" stroke-width="3" />
+  <path d="M22 18C22 13 26 10 32 10H36C42 10 46 13 46 18V39C46 43 44 46 40 48L47 55H38L34 50H32C26 50 22 47 22 42ZM30 19V41C30 43 31 44 33 44H36C38 44 39 43 39 41V19C39 17 38 16 36 16H33C31 16 30 17 30 19Z" fill="#45efff" filter="url(#glow)" />
+</svg>
