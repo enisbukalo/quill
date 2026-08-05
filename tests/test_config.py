@@ -12,6 +12,7 @@ from quill.config import (
     ConfigMissing,
     QuillfolioConfig,
     load_config,
+    phase_contract_dependencies,
     slugify,
 )
 from quill.findings import DEFAULT_BLOCKING_POLICY, BlockingPolicy
@@ -32,6 +33,7 @@ type = "producer"
 persona = "branch.md"
 model = "plan-27b"
 artifact = "branch.md"
+produces_contract = "quill.artifact/v1"
 
 [[phase]]
 id = "plan"
@@ -43,6 +45,8 @@ skills = ["python-pro"]
 artifact = "plan.md"
 inputs = ["branch"]
 max_artifact_chars = 16000
+produces_contract = "quill.plan/v1"
+accepts_contracts = ["quill.artifact/v1", "quill.review.findings/v1"]
 
 [[phase]]
 id = "review_impl"
@@ -50,6 +54,8 @@ type = "reviewer"
 persona = "review-impl.md"
 models = ["gemma", "qwen-27b"]
 against = ["plan"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]
 
 [[phase]]
 id = "review_final"
@@ -60,12 +66,15 @@ reconciles = ["review_impl"]
 gates = true
 retry_budget = 2
 on_block = "plan"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[phase]]
 id = "build_test"
 type = "mechanical"
 step = "build_test"
 gates = true
+produces_contract = "quill.verification/v1"
 """
 
 _FILLED = (
@@ -196,6 +205,7 @@ type = "producer"
 persona = "plan.md"
 model = "plan-27b"
 artifact = "plan.md"
+produces_contract = "quill.plan/v1"
 
 [workflows.pr_update]
 label = "Update existing PR"
@@ -208,6 +218,7 @@ type = "producer"
 persona = "plan.md"
 model = "plan-27b"
 artifact = "update.md"
+produces_contract = "quill.update.scope/v1"
 
 [workflows.pr_review]
 label = "Pull Request Review"
@@ -217,6 +228,7 @@ id = "review"
 type = "reviewer"
 persona = "review-impl.md"
 model = "review-27b"
+produces_contract = "quill.review.findings/v1"
 """
     )
     _make_vault(tmp_path, named, _DEFAULT_PERSONAS)
@@ -252,6 +264,7 @@ type = "producer"
 persona = "plan.md"
 model = "m"
 artifact = "plan.md"
+produces_contract = "quill.plan/v1"
 [workflows.pr_update]
 mode = "update"
 [[workflows.pr_update.phase]]
@@ -260,6 +273,8 @@ type = "reviewer"
 persona = "review-impl.md"
 model = "m"
 against = ["plan"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]
 """
     )
     _make_vault(tmp_path, named, _DEFAULT_PERSONAS)
@@ -408,14 +423,134 @@ def test_phase_fields_resolve(tmp_path: Path) -> None:
     assert final.on_block == ("plan",)
 
 
+# -- phase contract topology -----------------------------------------------------
+
+
+def test_every_loaded_phase_requires_an_exact_known_contract(tmp_path: Path) -> None:
+    missing = _FILLED.replace('produces_contract = "quill.artifact/v1"\n', "", 1)
+    _make_vault(tmp_path, missing, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="phase 'branch' is missing produces_contract"):
+        load_config(tmp_path)
+
+    unknown = _FILLED.replace("quill.artifact/v1", "quill.artifact/v999", 1)
+    _make_vault(tmp_path, unknown, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="unknown contract specification"):
+        load_config(tmp_path)
+
+    malformed = _FILLED.replace("quill.artifact/v1", "Quill Artifact", 1)
+    _make_vault(tmp_path, malformed, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="invalid contract identifier"):
+        load_config(tmp_path)
+
+
+def test_contract_kind_must_match_phase_type_and_mechanical_step(tmp_path: Path) -> None:
+    wrong_type = _FILLED.replace("quill.artifact/v1", "quill.verification/v1", 1)
+    _make_vault(tmp_path, wrong_type, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="type 'producer' cannot produce"):
+        load_config(tmp_path)
+
+    wrong_step = _FILLED.replace(
+        'step = "build_test"\ngates = true\nproduces_contract = "quill.verification/v1"',
+        'step = "build_test"\ngates = true\nproduces_contract = "quill.ci/v1"',
+    )
+    _make_vault(tmp_path, wrong_step, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="allowed steps: ci_check"):
+        load_config(tmp_path)
+
+
+def test_contract_edges_require_exact_acceptance_without_unused_types(tmp_path: Path) -> None:
+    missing = _FILLED.replace(
+        'accepts_contracts = ["quill.plan/v1"]', "accepts_contracts = []", 1
+    )
+    _make_vault(tmp_path, missing, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="does not accept required contract.*quill.plan/v1"):
+        load_config(tmp_path)
+
+    unused = _FILLED.replace(
+        'produces_contract = "quill.artifact/v1"',
+        'produces_contract = "quill.artifact/v1"\naccepts_contracts = ["quill.plan/v1"]',
+        1,
+    )
+    _make_vault(tmp_path, unused, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="accepts contract.*with no declared edge"):
+        load_config(tmp_path)
+
+    duplicate = _FILLED.replace(
+        'accepts_contracts = ["quill.plan/v1"]',
+        'accepts_contracts = ["quill.plan/v1", "quill.plan/v1"]',
+        1,
+    )
+    _make_vault(tmp_path, duplicate, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="accepts_contracts contains duplicates"):
+        load_config(tmp_path)
+
+
+def test_contract_only_requires_is_ordered_known_and_not_duplicated(tmp_path: Path) -> None:
+    valid = _FILLED.replace(
+        'step = "build_test"\ngates = true\nproduces_contract = "quill.verification/v1"',
+        'step = "build_test"\ngates = true\nproduces_contract = "quill.verification/v1"\nrequires = ["review_final"]\naccepts_contracts = ["quill.review.findings/v1"]',
+    )
+    _make_vault(tmp_path, valid, _DEFAULT_PERSONAS)
+    config = load_config(tmp_path)
+    assert phase_contract_dependencies(config)["build_test"] == ("review_final",)
+
+    unknown = valid.replace('requires = ["review_final"]', 'requires = ["missing"]')
+    _make_vault(tmp_path, unknown, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="requires unknown phase 'missing'"):
+        load_config(tmp_path)
+
+    forward = _FILLED.replace(
+        'produces_contract = "quill.artifact/v1"',
+        'produces_contract = "quill.artifact/v1"\nrequires = ["plan"]',
+        1,
+    )
+    _make_vault(tmp_path, forward, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="does not run before"):
+        load_config(tmp_path)
+
+    overlap = _FILLED.replace(
+        'inputs = ["branch"]', 'inputs = ["branch"]\nrequires = ["branch"]'
+    )
+    _make_vault(tmp_path, overlap, _DEFAULT_PERSONAS)
+    with pytest.raises(ConfigInvalid, match="repeats semantic dependencies in requires"):
+        load_config(tmp_path)
+
+
+def test_contract_topology_rejects_duplicate_semantic_edges(tmp_path: Path) -> None:
+    duplicate = _FILLED.replace(
+        'inputs = ["branch"]',
+        'inputs = ["branch"]\nsynthesizes = ["branch"]',
+    )
+    _make_vault(tmp_path, duplicate, _DEFAULT_PERSONAS)
+    with pytest.raises(
+        ConfigInvalid,
+        match="repeats dependency 'branch' across inputs and synthesizes",
+    ):
+        load_config(tmp_path)
+
+
+def test_contract_fields_and_spec_digest_affect_phase_set_hash(tmp_path: Path) -> None:
+    _make_vault(tmp_path, _FILLED, _DEFAULT_PERSONAS)
+    original = load_config(tmp_path).phase_set_hash()
+    changed = _FILLED.replace("quill.artifact/v1", "quill.implementation/v1")
+    _make_vault(tmp_path, changed, _DEFAULT_PERSONAS)
+    assert load_config(tmp_path).phase_set_hash() != original
+
+
 def test_concurrent_audits_resolve_with_one_shared_vllm_model(tmp_path: Path) -> None:
     text = _FILLED.replace(
         'kind = "opencode"',
         'kind = "opencode"\nbackend = "vllm"',
     ).replace(
         """persona = "review-impl.md"
-models = ["gemma", "qwen-27b"]""",
-        '''[[phase.audits]]
+models = ["gemma", "qwen-27b"]
+against = ["plan"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]""",
+        '''against = ["plan"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]
+[[phase.audits]]
 id = "architecture"
 label = "Requirements + architecture"
 persona = "review-impl-architecture.md"
@@ -443,8 +578,14 @@ model = "qwen-27b"''',
 def test_concurrent_audits_reject_non_vllm_backend(tmp_path: Path) -> None:
     text = _FILLED.replace(
         """persona = "review-impl.md"
-models = ["gemma", "qwen-27b"]""",
-        '''[[phase.audits]]
+models = ["gemma", "qwen-27b"]
+against = ["plan"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]""",
+        '''against = ["plan"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]
+[[phase.audits]]
 id = "architecture"
 persona = "review-impl-architecture.md"
 model = "qwen-27b"
@@ -483,6 +624,8 @@ model = "qwen"
 artifact = "requirements.md"
 parallel_group = "research"
 self_check = true
+produces_contract = "quill.research.requirements/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[phase]]
 id = "technical"
@@ -492,6 +635,8 @@ model = "qwen"
 artifact = "technical.md"
 parallel_group = "research"
 self_check = true
+produces_contract = "quill.research.technical/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[phase]]
 id = "research_synthesis"
@@ -500,6 +645,8 @@ persona = "research.md"
 model = "qwen"
 artifact = "research.md"
 synthesizes = ["requirements", "technical"]
+produces_contract = "quill.research.synthesis/v1"
+accepts_contracts = ["quill.research.requirements/v1", "quill.research.technical/v1", "quill.review.findings/v1"]
 
 [[phase]]
 id = "research_gate"
@@ -511,6 +658,8 @@ gates = true
 structured_findings = true
 on_block = "research_synthesis"
 selective_on_block = ["requirements", "technical"]
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.research.synthesis/v1"]
 """
     _make_vault(tmp_path, body, ("research.md", "review-impl.md"))
 
@@ -531,6 +680,39 @@ selective_on_block = ["requirements", "technical"]
         "requirements",
         "technical",
     )
+
+    synthesis_block = '''[[phase]]
+id = "research_synthesis"
+type = "producer"
+persona = "research.md"
+model = "qwen"
+artifact = "research.md"
+synthesizes = ["requirements", "technical"]
+produces_contract = "quill.research.synthesis/v1"
+accepts_contracts = ["quill.research.requirements/v1", "quill.research.technical/v1", "quill.review.findings/v1"]
+
+'''
+    direct = (
+        body.replace(synthesis_block, "")
+        .replace('against = ["research_synthesis"]', 'against = ["requirements", "technical"]')
+        .replace('on_block = "research_synthesis"\n', "")
+        .replace(
+            'accepts_contracts = ["quill.research.synthesis/v1"]',
+            'accepts_contracts = ["quill.research.requirements/v1", "quill.research.technical/v1"]',
+        )
+    )
+    _make_vault(tmp_path, direct, ("research.md", "review-impl.md"))
+    direct_gate = load_config(tmp_path).phase("research_gate")
+    assert direct_gate is not None
+    assert direct_gate.on_block == ()
+    assert direct_gate.against == ("requirements", "technical")
+
+    missing_against = direct.replace(
+        'against = ["requirements", "technical"]', 'against = ["requirements"]'
+    )
+    _make_vault(tmp_path, missing_against, ("research.md", "review-impl.md"))
+    with pytest.raises(ConfigInvalid, match="must review every retry lane"):
+        load_config(tmp_path)
 
 
 def test_parallel_producer_group_rejects_mixed_models(tmp_path: Path) -> None:
@@ -1021,11 +1203,11 @@ def test_phase_set_hash_stable_and_sensitive(tmp_path: Path) -> None:
     assert load_config(tmp_path).phase_set_hash() == h1
     # Reorder two phases -> different hash.
     reordered = _FILLED.replace(
-        '[[phase]]\nid = "build_test"\ntype = "mechanical"\nstep = "build_test"\ngates = true\n',
+        '[[phase]]\nid = "build_test"\ntype = "mechanical"\nstep = "build_test"\ngates = true\nproduces_contract = "quill.verification/v1"\n',
         "",
     )
     reordered = (
-        '[[phase]]\nid = "build_test"\ntype = "mechanical"\nstep = "build_test"\ngates = true\n'
+        '[[phase]]\nid = "build_test"\ntype = "mechanical"\nstep = "build_test"\ngates = true\nproduces_contract = "quill.verification/v1"\n'
         + reordered
     )
     _make_vault(tmp_path, reordered, _DEFAULT_PERSONAS)

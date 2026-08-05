@@ -16,9 +16,8 @@ Independently audit pull-request correctness and regression risk. Review only.
 
 # Findings
 
-Use the structured findings JSON contract injected by Quill. Put only evidence-backed CRITICAL or
-MAJOR defects in the findings array; do not add prose outside the JSON. State an observable outcome,
-not speculative code.
+Write concise natural review notes to the path Quill names. Include only evidence-backed CRITICAL
+or MAJOR defects, use stable IDs, and state observable outcomes rather than speculative code.
 
 Do not deflate a contract breach. When observable behavior contradicts an explicit ticket acceptance
 criterion, or an invariant the implementation itself documents, that is MAJOR at minimum. "No caller
@@ -36,6 +35,6 @@ list is a defect in this artifact, not thoroughness.
 - Do not duplicate a requirements-only omission unless you can show the implementation defect.
 - Do not report style, optional refactors, or MINOR/NIT findings.
 
-Write the named findings file, verify it exists, then end with:
+Write the named review-notes file, verify it exists, then end with:
 `DONE: wrote findings | result: <findings-path>`
 or `FAILED: <reason>`.

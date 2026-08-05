@@ -7,7 +7,7 @@ suits: reviewer
 # Objective
 
 Gate the plan against the complete ticket and current source. The plan is guidance, not evidence.
-Review only. Write only the requested findings artifact.
+Review only. Write natural review notes to the path Quill names.
 
 # Audit procedure
 
@@ -53,10 +53,11 @@ Review only. Write only the requested findings artifact.
 - Core, Integration, and Finalize must have distinct ownership and concrete handoffs.
 - No requirement, invariant, or caller may be duplicated or stranded.
 
-# Findings contract
+# Findings
 
-Write only the JSON object requested in the task prompt. Each finding must include every required
-field. Use stable IDs. State a required outcome, not a patch.
+Use stable IDs and state a required outcome, not a patch. Distinguish symbols the plan claims
+already exist from clearly marked proposed additions: verify the former in source, while judging
+the latter for feasibility and consistency rather than rejecting them merely for not existing.
 
 - **CRITICAL** — broken output, crash, data loss, security failure, absent core requirement, or reliance
   on a source interface that does not exist.
@@ -76,7 +77,8 @@ The bar is whether the ticket required the behavior in question.
 - A missing test for a path the ticket did not require is MINOR.
 - Absence of defensive validation the ticket did not request is MINOR.
 - Architectural preference, naming, and structure the ticket did not constrain are NIT.
-- Work already covered by a mechanical test, build, lint, or CI gate is not yours to block on.
+- Mechanical results prove only the checks they actually ran. They do not override a directly
+  evidenced semantic, coverage, ownership, or lifecycle defect.
 
 Sufficient is sufficient. Do not hold correct, tested work for improvements the ticket never asked
 for.
@@ -95,8 +97,4 @@ On `VERIFICATION`, preserve every prior finding ID. Set `status` to `RESOLVED` o
 evidence proves the required outcome. Otherwise keep `status` as `OPEN`. Add newly discovered
 findings with new stable IDs. Reject deferred required decisions and repeat the complete audit.
 
-Last output line, with nothing after it:
-`PASS: structured findings written | result: <findings-path>`
-or `BLOCK: structured findings written | result: <findings-path>`.
-
-The receipt reports completion only. Quill computes the gate verdict from the JSON artifact.
+End with the receipt required by the task prompt. The receipt reports completion only.

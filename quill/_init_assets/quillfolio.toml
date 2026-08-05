@@ -1,7 +1,7 @@
 # quillvault/quillfolio.toml — quill's data-driven phase engine config.
 #
 # This is the DEFAULT written by `quill --init`. It reproduces quill's core
-# workflow: parallel research -> synthesis/gate -> plan/gate -> implement -> parallel audits/gate
+# workflow: parallel research -> direct gate -> plan/gate -> implement -> parallel audits/gate
 # -> build/test -> commit/PR. The working branch is
 # created and checked out for you by the server's workspace preparation before the
 # first phase runs, so there is no separate branch phase — the commit phase simply
@@ -22,7 +22,7 @@ pr_base       = "main"
 [runner]
 # REQUIRED -- which coding-agent CLI quill drives each phase through.
 # Built-in: "opencode" or "pi". Configure that CLI's models to point at your server.
-kind = ""
+kind = "pi"
 
 # Model-server backend behind the pre-spawn seam.
 #   "llamacpp" -- swap presets per phase on the llama.cpp router.
@@ -98,7 +98,8 @@ model_load_seconds   = 360    # model switch/load poll ceiling (6 minutes)
 #
 # Flow flags: gates, retry_budget, on_block (earlier phase to jump back to on BLOCK; normal
 # traversal then resumes through every phase until the gate is reached again). A structured gate
-# can set `selective_on_block=[...]` to rerun only owning lanes before rebuilding its synthesis.
+# can set `selective_on_block=[...]` to rerun only owning lanes. With no `on_block`, the gate
+# re-reads every latest lane directly; an `on_block` synthesis remains supported for custom graphs.
 #
 # Skills: names your runner CLI loads before working (quill stores no skill bodies;
 # pi triggers them as `/skill:<name>`, opencode as `/<name>`). Set them up in your CLI.
@@ -120,7 +121,9 @@ model    = "plan-27b"
 skills   = ["technical-writing"]
 artifact = "research-requirements.md"
 parallel_group = "research"
-# self_check = true # requires runner.kind = "pi"
+self_check = "self-check-research-requirements.md"
+produces_contract = "quill.research.requirements/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[workflows.ticket.phase]]
 id       = "research_architecture"
@@ -131,7 +134,9 @@ model    = "plan-27b"
 skills   = ["technical-writing"]
 artifact = "research-architecture.md"
 parallel_group = "research"
-# self_check = true # requires runner.kind = "pi"
+self_check = "self-check-research-architecture.md"
+produces_contract = "quill.research.architecture/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[workflows.ticket.phase]]
 id       = "research_technical"
@@ -142,17 +147,9 @@ model    = "plan-27b"
 skills   = ["technical-writing"]
 artifact = "research-technical.md"
 parallel_group = "research"
-# self_check = true # requires runner.kind = "pi"
-
-[[workflows.ticket.phase]]
-id       = "research_synthesis"
-type     = "producer"
-label    = "research synthesis"
-persona  = "research-synthesis.md"
-model    = "plan-27b"
-skills   = ["technical-writing"]
-artifact = "research.md"
-synthesizes = ["research_requirements", "research_architecture", "research_technical"]
+self_check = "self-check-research-technical.md"
+produces_contract = "quill.research.technical/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[workflows.ticket.phase]]
 id           = "research_gate"
@@ -160,12 +157,14 @@ type         = "reviewer"
 label        = "research gate"
 persona      = "review-research.md"
 models       = ["review-27b"]
-against      = ["research_synthesis"]
+against      = ["research_requirements", "research_architecture", "research_technical"]
 gates        = true
 structured_findings = true
 retry_budget = 1
-on_block     = "research_synthesis"
 selective_on_block = ["research_requirements", "research_architecture", "research_technical"]
+self_check = "self-check-findings.md"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.research.requirements/v1", "quill.research.architecture/v1", "quill.research.technical/v1"]
 
 [[workflows.ticket.phase]]
 id       = "plan"
@@ -175,8 +174,11 @@ persona  = "plan.md"
 model    = "plan-27b"
 skills   = []
 artifact = "plan.md"
-inputs   = ["research_synthesis"]
-# self_check = true # requires runner.kind = "pi"
+inputs   = ["research_requirements", "research_architecture", "research_technical"]
+requires = ["research_gate"]
+self_check = "self-check-plan.md"
+produces_contract = "quill.plan/v1"
+accepts_contracts = ["quill.research.requirements/v1", "quill.research.architecture/v1", "quill.research.technical/v1", "quill.review.findings/v1"]
 
 [[workflows.ticket.phase]]
 id           = "review_plan"
@@ -189,6 +191,9 @@ gates        = true
 structured_findings = true
 retry_budget = 1
 on_block     = "plan"
+self_check = "self-check-findings.md"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1"]
 
 [[workflows.ticket.phase]]
 id                = "impl"
@@ -199,6 +204,9 @@ model             = "impl-35b"
 skills            = []
 artifact          = "impl.md"
 inputs            = ["plan"]
+self_check        = true
+produces_contract = "quill.implementation/v1"
+accepts_contracts = ["quill.plan/v1", "quill.verification/v1", "quill.review.findings/v1"]
 
 [[workflows.ticket.phase]]
 id           = "build_test"
@@ -207,6 +215,9 @@ step         = "build_test"
 gates        = true
 retry_budget = 1
 on_block     = "impl"
+requires     = ["impl"]
+produces_contract = "quill.verification/v1"
+accepts_contracts = ["quill.implementation/v1"]
 
 [[workflows.ticket.phase]]
 id      = "review_impl"
@@ -214,6 +225,9 @@ type    = "reviewer"
 label   = "implementation audits"
 against = ["plan", "impl"]
 structured_findings = true
+self_check = "self-check-findings.md"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.plan/v1", "quill.implementation/v1"]
 
 [[workflows.ticket.phase.audits]]
 id = "architecture"
@@ -244,6 +258,9 @@ gates        = true
 structured_findings = true
 retry_budget = 1
 on_block     = "impl"
+self_check = "self-check-findings.md"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[workflows.ticket.phase]]
 id       = "commit"
@@ -254,6 +271,10 @@ model    = "impl-35b"
 skills   = []
 artifact = "commit.md"
 inputs   = ["plan", "impl"]
+self_check = true
+requires = ["build_test", "review_impl_final"]
+produces_contract = "quill.delivery/v1"
+accepts_contracts = ["quill.plan/v1", "quill.implementation/v1", "quill.verification/v1", "quill.review.findings/v1"]
 # ---------------------------------------------------------------------------
 # Optional: gate on GitHub Actions instead of (or as well as) a local build.
 #
@@ -274,6 +295,9 @@ inputs   = ["plan", "impl"]
 # gates        = true
 # retry_budget = 1
 # on_block     = "impl"
+# requires     = ["commit"]
+# produces_contract = "quill.ci/v1"
+# accepts_contracts = ["quill.delivery/v1"]
 
 [workflows.pr_update]
 label = "Update existing PR"
@@ -289,7 +313,8 @@ persona = "update-scope.md"
 model = "plan-27b"
 artifact = "update-scope.md"
 # Optional for Pi: reopen update scope for one feedback-coverage audit.
-# self_check = true
+self_check = "self-check-pr-update.md"
+produces_contract = "quill.update.scope/v1"
 
 [[workflows.pr_update.phase]]
 id = "update_impl"
@@ -300,7 +325,9 @@ model = "impl-35b"
 artifact = "update-impl.md"
 inputs = ["update_scope"]
 # Optional for Pi: reopen implementation for one bounded correction audit.
-# self_check = true
+self_check = "self-check-pr-update.md"
+produces_contract = "quill.update.implementation/v1"
+accepts_contracts = ["quill.update.scope/v1", "quill.verification/v1", "quill.review.findings/v1", "quill.ci/v1"]
 
 [[workflows.pr_update.phase]]
 id = "test"
@@ -309,6 +336,9 @@ step = "test"
 gates = true
 retry_budget = 1
 on_block = "update_impl"
+requires = ["update_impl"]
+produces_contract = "quill.verification/v1"
+accepts_contracts = ["quill.update.implementation/v1"]
 
 [[workflows.pr_update.phase]]
 id = "build"
@@ -317,6 +347,9 @@ step = "build"
 gates = true
 retry_budget = 1
 on_block = "update_impl"
+requires = ["update_impl"]
+produces_contract = "quill.verification/v1"
+accepts_contracts = ["quill.update.implementation/v1"]
 
 [[workflows.pr_update.phase]]
 id = "review_update"
@@ -329,11 +362,17 @@ gates = true
 structured_findings = true
 retry_budget = 1
 on_block = "update_impl"
+self_check = "self-check-findings.md"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.update.scope/v1", "quill.update.implementation/v1"]
 
 [[workflows.pr_update.phase]]
 id = "head_guard"
 type = "mechanical"
 step = "pr_head_guard"
+requires = ["review_update"]
+produces_contract = "quill.pr-head/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[workflows.pr_update.phase]]
 id = "commit_update"
@@ -343,6 +382,10 @@ persona = "commit.md"
 model = "impl-35b"
 artifact = "commit-update.md"
 inputs = ["update_scope", "update_impl"]
+self_check = true
+requires = ["test", "build", "review_update", "head_guard"]
+produces_contract = "quill.delivery/v1"
+accepts_contracts = ["quill.update.scope/v1", "quill.update.implementation/v1", "quill.verification/v1", "quill.review.findings/v1", "quill.pr-head/v1"]
 
 [[workflows.pr_update.phase]]
 id = "ci"
@@ -351,11 +394,17 @@ step = "ci_check"
 gates = true
 retry_budget = 1
 on_block = "update_impl"
+requires = ["commit_update"]
+produces_contract = "quill.ci/v1"
+accepts_contracts = ["quill.delivery/v1"]
 
 [[workflows.pr_update.phase]]
 id = "acknowledge_feedback"
 type = "mechanical"
 step = "acknowledge_pr_feedback"
+requires = ["commit_update", "ci"]
+produces_contract = "quill.feedback-ack/v1"
+accepts_contracts = ["quill.delivery/v1", "quill.ci/v1"]
 
 [workflows.pr_review]
 label = "Pull Request Review"
@@ -367,6 +416,7 @@ type = "mechanical"
 label = "collect verification"
 step = "collect_pr_evidence"
 artifact = "pr-verification.md"
+produces_contract = "quill.pr-evidence/v1"
 
 [[workflows.pr_review.phase]]
 id = "review_pr"
@@ -374,6 +424,9 @@ type = "reviewer"
 label = "review pull request"
 against = ["collect_pr_evidence"]
 structured_findings = true
+self_check = "self-check-findings.md"
+produces_contract = "quill.review.findings/v1"
+accepts_contracts = ["quill.pr-evidence/v1"]
 
 [[workflows.pr_review.phase.audits]]
 id = "requirements"
@@ -405,9 +458,15 @@ model = "review-27b"
 skills = ["pull-request-review"]
 artifact = "pr-review.json"
 reconciles = ["review_pr"]
+self_check = "self-check-findings.md"
+produces_contract = "quill.pr.review/v1"
+accepts_contracts = ["quill.review.findings/v1"]
 
 [[workflows.pr_review.phase]]
 id = "publish_pr_review"
 type = "mechanical"
 label = "publish review"
 step = "publish_pr_review"
+requires = ["review_pr_final"]
+produces_contract = "quill.review-publication/v1"
+accepts_contracts = ["quill.pr.review/v1"]

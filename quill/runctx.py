@@ -8,13 +8,14 @@ nor :mod:`quill.mechanical` has to import the other.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 from typing import ClassVar, Protocol
 
 from quill.config import QuillfolioConfig
+from quill.contracts import ContractRef, ContractStatus
 from quill.events import Event
 from quill.git_ops import GitOps
 from quill.live_usage import LiveUsage
@@ -36,9 +37,59 @@ MODES = (MODE_CREATE, MODE_UPDATE, MODE_REVIEW)
 OnEvent = Callable[[Event], None]
 ShouldStop = Callable[[], bool]
 AnswerDecision = Callable[[str], "str | None"]
-#: Local verification runner: (config, selection) -> (ok, combined log). ``selection`` is
-#: ``build``, ``test``, or ``build_test``. None => local mechanical phases pass trivially.
-BuildTest = Callable[[QuillfolioConfig, str], "tuple[bool, str]"]
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResult:
+    """One observed local verification command, without parsing human console output."""
+
+    command: str
+    exit_code: int | None
+    cancelled: bool
+    timed_out: bool
+    started_at: str
+    ended_at: str
+    output: str
+
+    @property
+    def ok(self) -> bool:
+        return self.exit_code == 0 and not self.cancelled and not self.timed_out
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationResult:
+    """Typed result for an exact configured build/test selection."""
+
+    selection: str
+    commands: tuple[CommandResult, ...]
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.commands) and all(command.ok for command in self.commands)
+
+    @property
+    def combined_log(self) -> str:
+        return "\n".join(f"$ {item.command}\n{item.output}" for item in self.commands)
+
+    def __iter__(self) -> Iterator[bool | str]:
+        """Preserve tuple unpacking for external runner callers during the typed seam migration."""
+        yield self.ok
+        yield self.combined_log
+
+    def __getitem__(self, index: int) -> bool | str:
+        return (self.ok, self.combined_log)[index]
+
+
+@dataclass(frozen=True, slots=True)
+class MechanicalEvidence:
+    """Typed material retained only until the engine publishes a mechanical contract."""
+
+    status: ContractStatus
+    payload: object
+    artifacts: tuple[str, ...] = ()
+
+
+BuildTest = Callable[[QuillfolioConfig, str], "VerificationResult | tuple[bool, str]"]
 #: Skill-load directive: (skill names) -> a prompt line in the runner's own trigger syntax ("" if none).
 SkillDirective = Callable[[list[str]], str]
 #: Live tool-call progress: the phase's tool tally so far ({"read": 20, "bash": 6}) -> None.
@@ -51,7 +102,7 @@ UsageProgress = Callable[[str, LiveUsage, Path], None]
 CancelActive = Callable[[], None]
 SessionRepair = Spawner
 SessionCapacity = Callable[[str], int]
-PhaseCheckpointHook = Callable[[str], None]
+PhaseCheckpointHook = Callable[[str], str | None]
 
 
 def _no_skill_directive(_names: list[str]) -> str:
@@ -233,6 +284,11 @@ class RunContext:
     #: ``_run_with_fresh_attempts``, so a CRASH/GARBAGE re-entry would otherwise hand the gate a
     #: fresh budget; this tally makes ``retry_budget`` a per-run ceiling instead of a per-attempt one.
     gate_rounds_spent: dict[str, int] = field(default_factory=dict)
+    #: Latest validated durable contract for every configured phase/audit lane.
+    contracts: dict[str, ContractRef] = field(default_factory=dict)
+    contract_corrections: dict[str, str] = field(default_factory=dict)
+    retry_contracts: dict[str, ContractRef] = field(default_factory=dict)
+    mechanical_evidence: dict[str, MechanicalEvidence] = field(default_factory=dict)
     #: Model-switch wall time accumulated inside each active phase attempt. Terminal phase
     #: durations subtract it because model preparation is reported as its own timed operation.
     phase_model_load_s: dict[str, float] = field(default_factory=dict)
@@ -246,6 +302,8 @@ class RunContext:
     event_lock: RLock = field(default_factory=RLock, repr=False)
     #: Optional durable boundary captured immediately before each configured phase.
     checkpoint_phase: PhaseCheckpointHook | None = None
+    #: Exact checkpoint commit returned for the latest attempt of each phase, when available.
+    phase_checkpoints: dict[str, str] = field(default_factory=dict)
 
     def artifact_path(self, name: str) -> Path:
         """Absolute path to an artifact/findings file ``name`` in this run's dir."""

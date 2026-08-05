@@ -41,7 +41,31 @@ from typing import cast
 from quill import events
 from quill.attribution import commit_attribution
 from quill.blocker_memory import capture_blocker, resolve_blocker, verified_memory_block
-from quill.config import AuditDef, PhaseDef, QuillfolioConfig, slugify
+from quill.config import (
+    AuditDef,
+    PhaseDef,
+    QuillfolioConfig,
+    phase_contract_dependencies,
+    slugify,
+)
+from quill.contracts import (
+    ArtifactRef,
+    ContractError,
+    ContractRef,
+    ContractStatus,
+    default_catalog,
+    load_contract,
+    new_contract,
+    prepare_output_path,
+    publish_compatibility_view,
+    publish_contract,
+    repository_identity,
+    safe_phase_id,
+    snapshot_artifact,
+    strict_json_loads,
+    upstream_ref,
+    verify_artifact_ref,
+)
 from quill.events import Event
 from quill.findings import (
     Finding,
@@ -51,6 +75,7 @@ from quill.findings import (
     materialize_verification_delta,
     merge_verification_findings,
 )
+from quill.git_ops import GitError
 from quill.live_usage import LiveUsage
 from quill.mechanical import (
     PR_REVIEW_NAME,
@@ -74,6 +99,34 @@ from quill.phases import (
 from quill.runctx import MODE_REVIEW, MODE_UPDATE, RunContext
 
 _STRUCTURED_REPAIR_ATTEMPTS = 3
+
+_FINDINGS_DELTA_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "required": ["schema_version", "dispositions", "new_findings"],
+    "additional_properties": False,
+    "properties": {
+        "schema_version": {"type": "integer", "enum": [1]},
+        "dispositions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["id", "status", "evidence"],
+                "additional_properties": False,
+                "properties": {
+                    "id": {"type": "string", "min_length": 1},
+                    "status": {"type": "string", "enum": ["RESOLVED", "OPEN"]},
+                    "evidence": {"type": "string", "min_length": 1},
+                },
+            },
+        },
+        "new_findings": {
+            "type": "array",
+            "items": default_catalog()
+            .resolve("quill.review.findings/v1")
+            .payload_schema["properties"]["findings"]["items"],  # type: ignore[index]
+        },
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +199,12 @@ def run_phases(ctx: RunContext, *, start_phase: str | None = None) -> Event:
 
     summary, plan_lines = _run_plan_summary(ctx, start_phase=start_phase)
     ctx.on_event(
-        events.run_plan(summary, lines=plan_lines, phase_graph=build_phase_graph(ctx.config.phases))
+        events.run_plan(
+            summary,
+            lines=plan_lines,
+            phase_graph=build_phase_graph(ctx.config.phases),
+            phase_set_hash=ctx.config.phase_set_hash(),
+        )
     )
 
     started = start_phase is None
@@ -280,7 +338,9 @@ def _run_phase(
     """
     if ctx.checkpoint_phase is not None:
         try:
-            ctx.checkpoint_phase(phase.id)
+            checkpoint = ctx.checkpoint_phase(phase.id)
+            if isinstance(checkpoint, str) and checkpoint:
+                ctx.phase_checkpoints[phase.id] = checkpoint
         except Exception as exc:  # noqa: BLE001 - Git boundary failures must fail safely
             return PhaseResult(Outcome.CRASH, f"could not save phase checkpoint: {exc}")
 
@@ -324,6 +384,9 @@ def _dispatch_phase(
     ctx: RunContext, phase: PhaseDef, *, revise_findings: tuple[Finding, ...] = ()
 ) -> PhaseResult:
     """Run one fresh attempt of ``phase`` without taking another checkpoint."""
+    handoff_error = _validate_upstream_contracts(ctx, phase)
+    if handoff_error is not None:
+        return handoff_error
     if phase.type == "producer":
         return _run_producer(ctx, phase)
     if phase.type == "reviewer":
@@ -422,8 +485,16 @@ def _phase_execution_duration(ctx: RunContext, phase: PhaseDef, started: float) 
     return round(max(0.0, elapsed - model_load_s), 2)
 
 
-def _emit_done(ctx: RunContext, phase: PhaseDef, *, verdict: str | None, started: float) -> None:
+def _emit_done(
+    ctx: RunContext,
+    phase: PhaseDef,
+    *,
+    verdict: str | None,
+    started: float,
+    result: PhaseResult | None = None,
+) -> None:
     """Emit phase_done carrying the model, elapsed wall time since ``started``, and tool tally."""
+    ref = result.contract_ref if result is not None else None
     _emit_event(
         ctx,
         events.phase_done(
@@ -433,6 +504,10 @@ def _emit_done(ctx: RunContext, phase: PhaseDef, *, verdict: str | None, started
             model=_model_label(phase),
             duration_s=_phase_execution_duration(ctx, phase, started),
             tools=_take_tools(ctx, phase.id),
+            contract_kind=ref.kind if ref else None,
+            contract_version=ref.version if ref else None,
+            contract_status=ref.status.value if ref else None,
+            contract_digest=ref.digest if ref else None,
         ),
     )
 
@@ -452,6 +527,7 @@ def _emit_verdict_or_done(
     model = _model_label(phase)
     duration = _phase_execution_duration(ctx, phase, started)
     tools = _take_tools(ctx, phase.id)
+    ref = result.contract_ref
     if result.outcome in (Outcome.PASS, Outcome.BLOCK):
         _emit_event(
             ctx,
@@ -463,6 +539,10 @@ def _emit_verdict_or_done(
                 duration_s=duration,
                 tools=tools,
                 reason=result.message if result.is_block else None,
+                contract_kind=ref.kind if ref else None,
+                contract_version=ref.version if ref else None,
+                contract_status=ref.status.value if ref else None,
+                contract_digest=ref.digest if ref else None,
             ),
         )
     else:
@@ -476,6 +556,10 @@ def _emit_verdict_or_done(
                 duration_s=duration,
                 tools=tools,
                 reason=result.message,
+                contract_kind=ref.kind if ref else None,
+                contract_version=ref.version if ref else None,
+                contract_status=ref.status.value if ref else None,
+                contract_digest=ref.digest if ref else None,
             ),
         )
 
@@ -488,7 +572,7 @@ def _run_producer(ctx: RunContext, phase: PhaseDef, *, findings: str | None = No
     """
     started = _emit_started(ctx, phase)
     result = _spawn_producer(ctx, phase, findings=findings)
-    _emit_done(ctx, phase, verdict=_verdict_of(result), started=started)
+    _emit_done(ctx, phase, verdict=_verdict_of(result), started=started, result=result)
     return result
 
 
@@ -498,7 +582,9 @@ def _checkpoint_phases(ctx: RunContext, phases: list[PhaseDef]) -> PhaseResult |
         return None
     try:
         for phase in phases:
-            ctx.checkpoint_phase(phase.id)
+            checkpoint = ctx.checkpoint_phase(phase.id)
+            if isinstance(checkpoint, str) and checkpoint:
+                ctx.phase_checkpoints[phase.id] = checkpoint
     except Exception as exc:  # noqa: BLE001 - Git boundary failures must fail safely
         return PhaseResult(Outcome.CRASH, f"could not save phase checkpoint: {exc}")
     return None
@@ -633,8 +719,21 @@ def _run_parallel_producers(
                 artifact=artifact,
                 result=result,
             )
-            _emit_done(ctx, phase, verdict=_verdict_of(repaired), started=started)
-            if repaired.outcome in (Outcome.DONE, Outcome.PASS):
+            repaired = _finalize_llm_contract(
+                ctx,
+                phase,
+                model=model,
+                artifact=artifact,
+                result=repaired,
+            )
+            _emit_done(
+                ctx,
+                phase,
+                verdict=_verdict_of(repaired),
+                started=started,
+                result=repaired,
+            )
+            if not phase.produces_contract and repaired.outcome in (Outcome.DONE, Outcome.PASS):
                 _snapshot_parallel_artifact(ctx, phase)
             return repaired
 
@@ -649,7 +748,54 @@ def _run_parallel_producers(
         for future in as_completed(futures):
             phase = futures[future]
             completed[phase.id] = future.result()
+    if all(result.outcome in (Outcome.DONE, Outcome.PASS) for result in completed.values()):
+        _write_parallel_contract_index(ctx, phases)
     return [(phase, completed[phase.id]) for phase in phases]
+
+
+def _write_parallel_contract_index(ctx: RunContext, phases: list[PhaseDef]) -> None:
+    """Publish a discoverability index containing only validated immutable contract refs."""
+    group = phases[0].parallel_group
+    if group is None or any(not phase.produces_contract for phase in phases):
+        return
+    # A selective gate may re-run only one or two lanes. Rebuild the group index from the entire
+    # configured group so a successful partial refresh cannot silently drop untouched lane refs.
+    phases = [candidate for candidate in ctx.config.phases if candidate.parallel_group == group]
+    if not phases or any(not phase.produces_contract for phase in phases):
+        return
+    rows = []
+    for phase in phases:
+        ref = ctx.contracts.get(phase.id)
+        if ref is None:
+            return
+        rows.append(
+            {
+                "phase_id": ref.phase_id,
+                "attempt": ref.attempt,
+                "kind": f"{ref.kind}/v{ref.version}",
+                "contract": ref.path,
+                "digest": ref.digest,
+            }
+        )
+    target = ctx.run_dir / "contracts" / f"parallel-{safe_phase_id(group)}-latest.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    if temporary.exists() or temporary.is_symlink() or target.is_symlink():
+        return
+    try:
+        temporary.write_text(
+            json.dumps(
+                {"schema_version": 1, "group": group, "lanes": rows},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+    except OSError:
+        temporary.unlink(missing_ok=True)
 
 
 def _snapshot_parallel_artifact(ctx: RunContext, phase: PhaseDef) -> None:
@@ -692,6 +838,78 @@ def _snapshot_parallel_artifact(ctx: RunContext, phase: PhaseDef) -> None:
         )
 
 
+def _review_notes_name(phase: PhaseDef, namespace: str) -> str:
+    """Stable natural-language work artifact for one reviewer/finalizer lane."""
+    suffix = slugify(namespace) or "default"
+    return f"review-notes-{safe_phase_id(phase.id)}-{suffix}.md"
+
+
+def _findings_projection_validator(
+    ctx: RunContext,
+    phase: PhaseDef,
+    *,
+    prior: tuple[Finding, ...] = (),
+    gate_round: GateRound = GateRound(),
+    verify: bool = False,
+    namespace: str | None = None,
+) -> Callable[[Path, PhaseResult], PhaseResult]:
+    """Bridge a late-projected payload to the existing authoritative finding semantics."""
+
+    def validate(path: Path, receipt: PhaseResult) -> PhaseResult:
+        if verify and phase.gates:
+            try:
+                materialize_verification_delta(path, prior)
+            except ValueError as exc:
+                return PhaseResult(Outcome.GARBAGE, str(exc), raw_receipt=receipt.raw_receipt)
+        if phase.gates:
+            return deterministic_gate_result(
+                path,
+                receipt,
+                prior=prior,
+                allowed_owners=phase.selective_on_block,
+                policy=ctx.config.gates,
+                round_index=gate_round.index,
+                carried_ids=gate_round.carried_ids,
+                final_round=gate_round.final,
+            )
+        return deterministic_review_result(path, receipt, namespace=namespace)
+
+    return validate
+
+
+def _finalize_findings_contract(
+    ctx: RunContext,
+    phase: PhaseDef,
+    *,
+    model: str | None,
+    notes: str,
+    findings: str,
+    result: PhaseResult,
+    prior: tuple[Finding, ...] = (),
+    gate_round: GateRound = GateRound(),
+    verify: bool = False,
+    namespace: str | None = None,
+) -> PhaseResult:
+    """Self-check natural notes, late-project findings, validate semantics, and publish."""
+    return _finalize_llm_contract(
+        ctx,
+        phase,
+        model=model,
+        artifact=notes,
+        result=result,
+        projection_schema=_FINDINGS_DELTA_SCHEMA if verify and phase.gates else None,
+        payload_validator=_findings_projection_validator(
+            ctx,
+            phase,
+            prior=prior,
+            gate_round=gate_round,
+            verify=verify,
+            namespace=namespace,
+        ),
+        compatibility_artifact=findings,
+    )
+
+
 def _run_reviewer(
     ctx: RunContext, phase: PhaseDef, *, revise_findings: tuple[Finding, ...] = ()
 ) -> PhaseResult:
@@ -709,15 +927,45 @@ def _run_reviewer(
         for model in _affinity_order(
             phase.models, ctx.loaded_preset, _next_phase_model(ctx.config, phase.id)
         ):
-            findings = _findings_name(phase, model)
-            result = _spawn_llm(ctx, phase, model=model, task=_review_task(ctx, phase, findings))
-            result = _repair_artifact_failure(
-                ctx, phase, model=model, artifact=findings, result=result
+            lane = (
+                replace(
+                    phase,
+                    id=f"{phase.id}.{slugify(model)}",
+                    label=f"{phase.label or phase.id} ({model})",
+                    models=(model,),
+                )
+                if phase.produces_contract
+                else phase
             )
-            if phase.structured_findings:
+            findings = _findings_name(phase, model)
+            work_artifact = (
+                _review_notes_name(lane, model) if phase.produces_contract else findings
+            )
+            if phase.produces_contract:
+                ctx.phase_call_counts[lane.id] = ctx.phase_call_counts.get(phase.id, 1)
+            result = _spawn_llm(
+                ctx,
+                lane,
+                model=model,
+                task=_review_task(ctx, lane, work_artifact),
+            )
+            result = _repair_artifact_failure(
+                ctx, lane, model=model, artifact=work_artifact, result=result
+            )
+            if phase.produces_contract:
+                result = _finalize_findings_contract(
+                    ctx,
+                    lane,
+                    model=model,
+                    notes=work_artifact,
+                    findings=findings,
+                    result=result,
+                    namespace=slugify(model),
+                )
+            elif phase.structured_findings:
                 result = _resolve_structured_review(
                     ctx,
-                    phase,
+                    lane,
                     model=model,
                     artifact=findings,
                     result=result,
@@ -732,11 +980,28 @@ def _run_reviewer(
     # Single-model reviewer.
     started = _emit_started(ctx, phase)
     findings = _findings_name(phase, phase.model or "")
-    initial = _spawn_llm(ctx, phase, model=phase.model, task=_review_task(ctx, phase, findings))
-    initial = _repair_artifact_failure(
-        ctx, phase, model=phase.model, artifact=findings, result=initial
+    work_artifact = (
+        _review_notes_name(phase, phase.model or phase.id) if phase.produces_contract else findings
     )
-    if phase.gates and phase.structured_findings:
+    initial = _spawn_llm(
+        ctx,
+        phase,
+        model=phase.model,
+        task=_review_task(ctx, phase, work_artifact),
+    )
+    initial = _repair_artifact_failure(
+        ctx, phase, model=phase.model, artifact=work_artifact, result=initial
+    )
+    if phase.produces_contract:
+        initial = _finalize_findings_contract(
+            ctx,
+            phase,
+            model=phase.model,
+            notes=work_artifact,
+            findings=findings,
+            result=initial,
+        )
+    elif phase.gates and phase.structured_findings:
         initial = _resolve_structured_gate(
             ctx, phase, model=phase.model, artifact=findings, result=initial
         )
@@ -795,18 +1060,37 @@ def _run_concurrent_audits(
             return PhaseResult(Outcome.CRASH, "stop requested before audit started")
         started = _emit_started(ctx, lane)
         findings = _audit_findings_name(phase, audit)
+        work_artifact = (
+            _review_notes_name(lane, audit.id) if phase.produces_contract else findings
+        )
         task = _review_task(
             ctx,
             lane,
-            findings,
+            work_artifact,
             verify=bool(revise_findings),
             prior_findings=revise_findings,
         )
         result = _spawn_preloaded_llm(ctx, lane, model=model, task=task)
         repaired = _repair_artifact_failure(
-            ctx, lane, model=model, artifact=findings, result=result
+            ctx,
+            lane,
+            model=model,
+            artifact=work_artifact,
+            result=result,
         )
-        if phase.structured_findings:
+        if phase.produces_contract:
+            repaired = _finalize_findings_contract(
+                ctx,
+                lane,
+                model=model,
+                notes=work_artifact,
+                findings=findings,
+                result=repaired,
+                prior=revise_findings,
+                verify=bool(revise_findings),
+                namespace=audit.id,
+            )
+        elif phase.structured_findings:
             repaired = _resolve_structured_review(
                 ctx,
                 lane,
@@ -818,7 +1102,13 @@ def _run_concurrent_audits(
         # Complete the lane while it still owns the worker slot. This makes the terminal event
         # visible before the executor admits the next queued lane, rather than allowing its start
         # event to race ahead of this completion in the coordinator thread.
-        _emit_done(ctx, lane, verdict=_verdict_of(repaired), started=started)
+        _emit_done(
+            ctx,
+            lane,
+            verdict=_verdict_of(repaired),
+            started=started,
+            result=repaired,
+        )
         return repaired
 
     results: dict[str, PhaseResult] = {}
@@ -841,14 +1131,45 @@ def _run_finalizer(ctx: RunContext, phase: PhaseDef) -> PhaseResult:
     """Reconcile N reviewers' findings (paths injected) and gate."""
     started = _emit_started(ctx, phase)
     artifact = phase.artifact or f"{phase.id}.md"
+    work_artifact = (
+        _review_notes_name(phase, phase.model or phase.id)
+        if phase.produces_contract
+        else artifact
+    )
     initial = _spawn_llm(ctx, phase, model=phase.model, task=_finalizer_task(ctx, phase))
     initial = _repair_artifact_failure(
-        ctx, phase, model=phase.model, artifact=artifact, result=initial
+        ctx, phase, model=phase.model, artifact=work_artifact, result=initial
     )
-    initial = _repair_pr_review_contract(
-        ctx, phase, model=phase.model, artifact=artifact, result=initial
-    )
-    if phase.gates and phase.structured_findings:
+    if phase.produces_contract and phase.structured_findings:
+        try:
+            reconciled = _load_reconciled_findings(ctx, phase)
+        except ValueError as exc:
+            initial = PhaseResult(Outcome.GARBAGE, str(exc))
+        else:
+            initial = _finalize_findings_contract(
+                ctx,
+                phase,
+                model=phase.model,
+                notes=work_artifact,
+                findings=artifact,
+                result=initial,
+                prior=reconciled,
+            )
+    elif phase.produces_contract and artifact == PR_REVIEW_NAME:
+        initial = _finalize_llm_contract(
+            ctx,
+            phase,
+            model=phase.model,
+            artifact=work_artifact,
+            result=initial,
+            payload_validator=_pr_review_projection_validator(ctx, phase),
+            compatibility_artifact=artifact,
+        )
+    else:
+        initial = _repair_pr_review_contract(
+            ctx, phase, model=phase.model, artifact=artifact, result=initial
+        )
+    if not phase.produces_contract and phase.gates and phase.structured_findings:
         try:
             reconciled = _load_reconciled_findings(ctx, phase)
         except ValueError as exc:
@@ -867,6 +1188,34 @@ def _run_finalizer(ctx: RunContext, phase: PhaseDef) -> PhaseResult:
     if phase.gates:
         return _gate(ctx, phase, initial)
     return initial
+
+
+def _pr_review_projection_validator(
+    ctx: RunContext, phase: PhaseDef
+) -> Callable[[Path, PhaseResult], PhaseResult]:
+    """Normalize and reconcile a projected PR review before contract publication."""
+
+    def validate(path: Path, receipt: PhaseResult) -> PhaseResult:
+        try:
+            review = _load_pr_review(path)
+            _require_pr_review_reconciliation(ctx, phase, review)
+            path.write_text(
+                json.dumps(review, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return PhaseResult(
+                Outcome.GARBAGE,
+                f"invalid PR review projection: {exc}",
+                raw_receipt=receipt.raw_receipt,
+            )
+        return PhaseResult(
+            Outcome.DONE,
+            "validated PR review projection",
+            raw_receipt=receipt.raw_receipt,
+        )
+
+    return validate
 
 
 def _repair_pr_review_contract(
@@ -957,15 +1306,96 @@ def _require_pr_review_reconciliation(
 
 def _run_mechanical(ctx: RunContext, phase: PhaseDef) -> PhaseResult:
     """Dispatch a mechanical phase; gate build_test (and any gated mechanical) on BLOCK."""
+    def execute() -> PhaseResult:
+        return _finalize_mechanical_contract(
+            ctx,
+            phase,
+            run_mechanical(ctx, phase, spawn=_spawn_producer),
+        )
+
     started = _emit_started(ctx, phase)
-    result = run_mechanical(ctx, phase, spawn=_spawn_producer)
+    result = execute()
     _emit_verdict_or_done(ctx, phase, result, started=started)
 
     if phase.gates and result.outcome in (Outcome.PASS, Outcome.BLOCK):
-        return _gate(
-            ctx, phase, result, verify=lambda _a: run_mechanical(ctx, phase, spawn=_spawn_producer)
-        )
+        return _gate(ctx, phase, result, verify=lambda _a: execute())
     return result
+
+
+def _finalize_mechanical_contract(
+    ctx: RunContext, phase: PhaseDef, result: PhaseResult
+) -> PhaseResult:
+    """Build a configured mechanical envelope exclusively from Python-observed evidence."""
+    if not phase.produces_contract:
+        return result
+    evidence = ctx.mechanical_evidence.pop(phase.id, None)
+    if evidence is None:
+        return PhaseResult(
+            Outcome.GARBAGE,
+            f"mechanical phase '{phase.id}' produced no typed evidence",
+        )
+    attempt = ctx.phase_call_counts.get(phase.id, 0)
+    try:
+        sources = tuple(
+            snapshot_artifact(
+                ctx.run_dir,
+                ctx.artifact_path(name),
+                phase.id,
+                attempt,
+                slot=index,
+            )
+            for index, name in enumerate(evidence.artifacts, 1)
+        )
+        head, fingerprint = repository_identity(ctx.directory)
+        spec = default_catalog().resolve(phase.produces_contract)
+        contract = new_contract(
+            spec=spec,
+            status=evidence.status,
+            phase_outcome=result.outcome.value,
+            run_id=ctx.run_id,
+            workflow=ctx.workflow,
+            phase_id=phase.id,
+            phase_type=phase.type,
+            attempt=attempt,
+            source_artifacts=sources,
+            upstream=tuple(upstream_ref(ref) for ref in _upstream_refs(ctx, phase)),
+            payload=evidence.payload,
+            git_head=head,
+            checkpoint=ctx.phase_checkpoints.get(phase.id),
+            worktree_fingerprint=fingerprint,
+        )
+        ref = publish_contract(ctx.run_dir, contract, default_catalog())
+    except ContractError as exc:
+        return PhaseResult(Outcome.GARBAGE, f"could not publish mechanical contract: {exc}")
+    ctx.contracts[phase.id] = ref
+    _emit_event(
+        ctx,
+        events.contract_validated(
+            phase.id,
+            kind=ref.kind,
+            status=ref.status.value,
+        ),
+    )
+    _emit_event(
+        ctx,
+        events.contract_published(
+            phase.id,
+            kind=ref.kind,
+            version=ref.version,
+            status=ref.status.value,
+            digest=ref.digest,
+            attempt=ref.attempt,
+        ),
+    )
+    return PhaseResult(
+        result.outcome,
+        result.message,
+        question=result.question,
+        result_path=result.result_path,
+        raw_receipt=result.raw_receipt,
+        allow_phase_retry=result.allow_phase_retry,
+        contract_ref=ref,
+    )
 
 
 # -- the gate ---------------------------------------------------------------------
@@ -1008,7 +1438,10 @@ def _gate(
     def revise(attempt: int) -> PhaseResult:
         ctx.gate_rounds_spent[phase.id] = spent + attempt
         ctx.on_event(events.retry(phase.id, spent + attempt, configured))
-        if not route:
+        if gate_ref := ctx.contracts.get(phase.id):
+            for target in (*phase.selective_on_block, *phase.on_block):
+                ctx.retry_contracts[target] = gate_ref
+        if not route and not phase.selective_on_block:
             return PhaseResult(Outcome.BLOCK, f"phase '{phase.id}' BLOCKed and has no on_block")
         if phase.selective_on_block:
             selected_ids = {
@@ -1029,6 +1462,8 @@ def _gate(
                 ctx.history.append(lane_result)
                 if lane_result.outcome not in (Outcome.DONE, Outcome.PASS):
                     return lane_result
+            if not route:
+                return PhaseResult(Outcome.DONE, "selected research lane contracts refreshed")
         # Follow the graph's back-edge, then traverse every configured phase normally until the
         # blocking gate. Only the first producer is primed with this gate's findings.
         #
@@ -1094,12 +1529,20 @@ def _gate(
                 pending_memories.append(pending)
         return result
 
-    gate: GateResult = run_gate(
-        initial=initial,
-        revise=revise,
-        verify=verify_and_emit,
-        max_retries=budget,
-    )
+    retry_targets = (*phase.selective_on_block, *phase.on_block)
+    try:
+        gate: GateResult = run_gate(
+            initial=initial,
+            revise=revise,
+            verify=verify_and_emit,
+            max_retries=budget,
+        )
+    finally:
+        # Retry findings are an edge-local input, not ambient context for later ordinary runs of
+        # the producer. Preserve the ref in every contract published during the retry, then clear
+        # it before that producer can run later as an ordinary forward phase.
+        for target in retry_targets:
+            ctx.retry_contracts.pop(target, None)
     if gate.passed:
         for pending in pending_memories:
             resolve_blocker(ctx, pending, verified_by=f"{phase.id}:PASS")
@@ -1176,6 +1619,11 @@ def _run_phase_for_verify(
     """Re-spawn the gating phase's persona to confirm the revision (narrow verification)."""
     if phase.type == "finalizer":
         artifact = phase.artifact or f"{phase.id}.md"
+        work_artifact = (
+            _review_notes_name(phase, phase.model or phase.id)
+            if phase.produces_contract
+            else artifact
+        )
         reconciled: tuple[Finding, ...] = ()
         verification_findings = prior_findings
         if phase.structured_findings:
@@ -1197,8 +1645,20 @@ def _run_phase_for_verify(
             ),
         )
         repaired = _repair_artifact_failure(
-            ctx, phase, model=phase.model, artifact=artifact, result=result
+            ctx, phase, model=phase.model, artifact=work_artifact, result=result
         )
+        if phase.produces_contract and phase.structured_findings:
+            return _finalize_findings_contract(
+                ctx,
+                phase,
+                model=phase.model,
+                notes=work_artifact,
+                findings=artifact,
+                result=repaired,
+                prior=verification_findings,
+                gate_round=gate_round,
+                verify=True,
+            )
         if phase.structured_findings:
             return _resolve_structured_gate(
                 ctx,
@@ -1212,6 +1672,9 @@ def _run_phase_for_verify(
             )
         return repaired
     findings = _findings_name(phase, phase.model or "")
+    work_artifact = (
+        _review_notes_name(phase, phase.model or phase.id) if phase.produces_contract else findings
+    )
     result = _spawn_llm(
         ctx,
         phase,
@@ -1219,15 +1682,27 @@ def _run_phase_for_verify(
         task=_review_task(
             ctx,
             phase,
-            findings,
+            work_artifact,
             verify=True,
             prior_findings=prior_findings,
             blocking_ids=_blocking_ids(ctx, prior_findings, gate_round),
         ),
     )
     repaired = _repair_artifact_failure(
-        ctx, phase, model=phase.model, artifact=findings, result=result
+        ctx, phase, model=phase.model, artifact=work_artifact, result=result
     )
+    if phase.produces_contract:
+        return _finalize_findings_contract(
+            ctx,
+            phase,
+            model=phase.model,
+            notes=work_artifact,
+            findings=findings,
+            result=repaired,
+            prior=prior_findings,
+            gate_round=gate_round,
+            verify=True,
+        )
     if phase.structured_findings:
         return _resolve_structured_gate(
             ctx,
@@ -1259,7 +1734,16 @@ def _spawn_producer(
             result = _spawn_llm(ctx, phase, model=phase.model, task=task)
     else:
         result = _spawn_llm(ctx, phase, model=phase.model, task=task)
-    return _repair_artifact_failure(ctx, phase, model=phase.model, artifact=artifact, result=result)
+    repaired = _repair_artifact_failure(
+        ctx, phase, model=phase.model, artifact=artifact, result=result
+    )
+    return _finalize_llm_contract(
+        ctx,
+        phase,
+        model=phase.model,
+        artifact=artifact,
+        result=repaired,
+    )
 
 
 def _repair_artifact_failure(
@@ -1289,10 +1773,18 @@ def _repair_artifact_failure(
         # A valid structured artifact needs no receipt repair, but an opted-in phase still gets its
         # self-check: the schema validator proves the JSON is well formed, never that a finding
         # inside it survives contact with the source it cites.
-        return _self_check_phase(ctx, phase, model=model, artifact=artifact, result=result)
+        return (
+            result
+            if phase.produces_contract
+            else _self_check_phase(ctx, phase, model=model, artifact=artifact, result=result)
+        )
     checked = _require_artifact(ctx, result, artifact, max_chars=phase.max_artifact_chars)
     if checked.outcome is not Outcome.GARBAGE:
-        return _self_check_phase(ctx, phase, model=model, artifact=artifact, result=checked)
+        return (
+            checked
+            if phase.produces_contract
+            else _self_check_phase(ctx, phase, model=model, artifact=artifact, result=checked)
+        )
     if ctx.deps.session_repair is None:
         return checked
 
@@ -1351,7 +1843,11 @@ def _repair_artifact_failure(
         return _self_fix_failure(checked.message, repaired)
     checked = _require_artifact(ctx, repaired, artifact, max_chars=phase.max_artifact_chars)
     _self_fix_done(ctx, phase, fix_started, repaired=_self_fix_repaired(checked))
-    return _self_check_phase(ctx, phase, model=model, artifact=artifact, result=checked)
+    return (
+        checked
+        if phase.produces_contract
+        else _self_check_phase(ctx, phase, model=model, artifact=artifact, result=checked)
+    )
 
 
 def _self_fix_failure(problem: str, result: PhaseResult) -> PhaseResult:
@@ -1544,6 +2040,19 @@ def _self_fix_repaired(result: PhaseResult) -> bool:
 #: re-verify its own findings against source before the workflow pays for another producer round.
 _SELF_CHECK_OUTCOMES = (Outcome.DONE, Outcome.PASS, Outcome.BLOCK)
 
+_DELIVERY_SEMANTIC_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "required": ["summary", "unresolved"],
+    "additional_properties": False,
+    "properties": {
+        "summary": {"type": "string", "min_length": 1},
+        "unresolved": {
+            "type": "array",
+            "items": {"type": "string", "min_length": 1},
+        },
+    },
+}
+
 
 def _self_check_prompt(ctx: RunContext, phase: PhaseDef, *, artifact: str) -> str:
     """The continuation prompt for one self-check, from the phase's persona or the generic text.
@@ -1551,18 +2060,30 @@ def _self_check_prompt(ctx: RunContext, phase: PhaseDef, *, artifact: str) -> st
     The worker is already inside the phase's session, so neither variant restates the preamble or
     the original task: it names the artifact and the standard the check is against.
     """
+    if phase.type in {"reviewer", "finalizer"}:
+        authority = (
+            "This phase is read-only: correct only these review notes. Do not modify repository "
+            "work, upstream artifacts, comments, reviews, commits, branches, or other side effects."
+        )
+    elif phase.id == "commit":
+        authority = (
+            "Verify already completed delivery work idempotently. Do not repeat an external side "
+            "effect merely to check it; make corrections only within the original task's authority."
+        )
+    else:
+        authority = "Make corrections only within the mutation authority of the original phase task."
     location = (
         f"Your artifact for this phase is at {ctx.artifact_path(artifact)}. This is the only "
-        "self-check iteration for this phase attempt. Correct the artifact or the repository work "
-        "directly, then emit the receipt line your original task requires."
+        f"self-check iteration for this phase attempt. It is the natural work artifact. {authority} "
+        "Then emit the receipt line your original task requires."
     )
     if phase.self_check_persona is not None:
         body = load_persona_body(ctx.config.persona_path(phase.self_check_persona))
         return f"{body}\n\n{location}"
     return (
         "Run one bounded completion self-check. Re-read the ticket, your phase instructions, your "
-        "required skills, the current repository state, and your artifact. Check phase-contract "
-        "and skill conformance, factual accuracy, unsupported or invented claims, missed "
+        "required skills, the current repository state, and your artifact. Check instruction and "
+        "skill conformance, factual accuracy, unsupported or invented claims, missed "
         "requirements, and obvious correctness gaps. Do not broaden scope or repeat the "
         f"independent review phase. {location}"
     )
@@ -1575,11 +2096,17 @@ def _self_check_phase(
     model: str | None,
     artifact: str,
     result: PhaseResult,
+    authoritative: bool = False,
 ) -> PhaseResult:
     """Run one non-gating completion-and-correction pass in the producer's Pi session."""
     if not phase.self_check or result.outcome not in _SELF_CHECK_OUTCOMES:
         return result
     if ctx.deps.session_repair is None:
+        if authoritative:
+            return PhaseResult(
+                Outcome.GARBAGE,
+                "configured contract self-check requires same-session continuation support",
+            )
         return result
 
     label = phase.label or phase.id
@@ -1601,7 +2128,534 @@ def _self_check_phase(
     # changes made by the continuation persist, while the producer's successful verdict remains
     # authoritative. A later reviewer may still send the workflow back for a fresh producer attempt,
     # which receives its own single self-check.
+    return checked if authoritative else result
+
+
+def _finalize_llm_contract(
+    ctx: RunContext,
+    phase: PhaseDef,
+    *,
+    model: str | None,
+    artifact: str,
+    result: PhaseResult,
+    projection_schema: dict[str, object] | None = None,
+    payload_validator: Callable[[Path, PhaseResult], PhaseResult] | None = None,
+    compatibility_artifact: str | None = None,
+) -> PhaseResult:
+    """Semantically self-check, freeze, late-project, validate, and publish one LLM handoff."""
+    if not phase.produces_contract:
+        return result
+    if result.outcome not in _SELF_CHECK_OUTCOMES:
+        return result
+    if phase.self_check:
+        result = _self_check_phase(
+            ctx,
+            phase,
+            model=model,
+            artifact=artifact,
+            result=result,
+            authoritative=True,
+        )
+        if result.outcome not in _SELF_CHECK_OUTCOMES:
+            return result
+    path = ctx.artifact_path(artifact)
+    checked = _require_artifact(ctx, result, artifact, max_chars=phase.max_artifact_chars)
+    if checked.outcome is Outcome.GARBAGE:
+        return checked
+    attempt = ctx.phase_call_counts.get(phase.id, 0)
+    try:
+        evidence = snapshot_artifact(ctx.run_dir, path, phase.id, attempt)
+        before_head, before_worktree = repository_identity(ctx.directory)
+        spec = default_catalog().resolve(phase.produces_contract)
+        if spec.identifier == "quill.delivery/v1" and projection_schema is None:
+            projection_schema = _DELIVERY_SEMANTIC_SCHEMA
+
+            def enrich_delivery(target: Path, current: PhaseResult) -> PhaseResult:
+                return _enrich_delivery_projection(ctx, target, current)
+
+            payload_validator = enrich_delivery
+    except ContractError as exc:
+        return PhaseResult(Outcome.GARBAGE, f"could not freeze phase contract source: {exc}")
+
+    try:
+        staging = prepare_output_path(
+            ctx.run_dir,
+            ctx.run_dir
+            / ".contract-staging"
+            / safe_phase_id(phase.id)
+            / f"attempt-{attempt}.json",
+        )
+    except ContractError as exc:
+        return PhaseResult(Outcome.GARBAGE, f"contract staging path is unsafe: {exc}")
+    if staging.exists():
+        return PhaseResult(Outcome.GARBAGE, f"contract staging path already exists: {staging}")
+    prompt = _contract_projection_prompt(
+        phase,
+        source=path,
+        source_sha=evidence.sha256,
+        staging=staging,
+        spec_schema=projection_schema or spec.payload_schema,
+    )
+    _emit_event(
+        ctx,
+        events.projection_started(
+            phase.id,
+            kind=phase.produces_contract,
+            attempt=attempt,
+        ),
+    )
+    projected = _repair_llm_session(ctx, phase, model=model, prompt=prompt)
+    mutation = _projection_mutation_error(
+        ctx,
+        evidence=evidence,
+        before_head=before_head,
+        before_worktree=before_worktree,
+    )
+    if mutation is not None:
+        _emit_event(
+            ctx,
+            events.projection_done(
+                phase.id,
+                kind=phase.produces_contract,
+                valid=False,
+                reason="repository_or_source_mutation",
+            ),
+        )
+        return PhaseResult(Outcome.GARBAGE, mutation)
+    if projected.outcome in (Outcome.CRASH, Outcome.FAILED, Outcome.NEEDS_DECISION):
+        _emit_event(
+            ctx,
+            events.projection_done(
+                phase.id,
+                kind=phase.produces_contract,
+                valid=False,
+                reason="continuation_failed",
+            ),
+        )
+        return projected
+
+    rejection = "projection did not write a payload"
+    payload: object | None = None
+    status = ContractStatus.COMPLETE
+    for repair_attempt in range(_STRUCTURED_REPAIR_ATTEMPTS + 1):
+        mutation = _projection_mutation_error(
+            ctx,
+            evidence=evidence,
+            before_head=before_head,
+            before_worktree=before_worktree,
+        )
+        if mutation is not None:
+            _emit_event(
+                ctx,
+                events.projection_done(
+                    phase.id,
+                    kind=phase.produces_contract,
+                    valid=False,
+                    reason="repository_or_source_mutation",
+                ),
+            )
+            return PhaseResult(Outcome.GARBAGE, mutation)
+        try:
+            raw = strict_json_loads(staging.read_text(encoding="utf-8"))
+            status, payload = _projection_payload(raw)
+            if status is ContractStatus.INCOMPLETE:
+                # Validate the incomplete shape through the normal constructor, but never publish it.
+                new_contract(
+                    spec=spec,
+                    status=status,
+                    phase_outcome=result.outcome.value,
+                    run_id=ctx.run_id,
+                    workflow=ctx.workflow,
+                    phase_id=phase.id,
+                    phase_type=phase.type,
+                    attempt=attempt,
+                    source_artifacts=(evidence,),
+                    upstream=tuple(upstream_ref(ref) for ref in _upstream_refs(ctx, phase)),
+                    payload=payload,
+                    git_head=before_head,
+                    checkpoint=ctx.phase_checkpoints.get(phase.id),
+                    worktree_fingerprint=before_worktree,
+                )
+                missing = cast(dict[str, object], payload)["missing"]
+                ctx.contract_corrections[phase.id] = (
+                    "The previous attempt's completed work omitted required semantic information: "
+                    + json.dumps(missing, ensure_ascii=False)
+                    + ". Correct the natural work using evidence; preserve an explicit unknown if "
+                    "the ticket and repository cannot resolve it."
+                )
+                _emit_event(
+                    ctx,
+                    events.contract_incomplete(
+                        phase.id,
+                        kind=phase.produces_contract,
+                        missing_count=len(cast(list[object], missing)),
+                    ),
+                )
+                _emit_event(
+                    ctx,
+                    events.projection_done(
+                        phase.id,
+                        kind=phase.produces_contract,
+                        valid=False,
+                        reason="contract_incomplete",
+                    ),
+                )
+                return PhaseResult(
+                    Outcome.GARBAGE,
+                    "CONTRACT_INCOMPLETE: " + json.dumps(missing, ensure_ascii=False),
+                )
+            if payload_validator is not None:
+                validated_result = payload_validator(staging, result)
+                if validated_result.outcome is Outcome.GARBAGE:
+                    raise ContractError(validated_result.message)
+                if validated_result.outcome in (
+                    Outcome.CRASH,
+                    Outcome.FAILED,
+                    Outcome.NEEDS_DECISION,
+                ):
+                    return validated_result
+                result = validated_result
+                # Finding adapters may normalize IDs or materialize a verification delta. Publish
+                # exactly the post-adapter payload that deterministic semantics accepted.
+                payload = strict_json_loads(staging.read_text(encoding="utf-8"))
+                spec.validate_payload(payload)
+            else:
+                spec.validate_payload(payload)
+            break
+        except (OSError, ContractError) as exc:
+            rejection = str(exc)
+        if repair_attempt >= _STRUCTURED_REPAIR_ATTEMPTS:
+            _emit_event(
+                ctx,
+                events.projection_done(
+                    phase.id,
+                    kind=phase.produces_contract,
+                    valid=False,
+                    reason="invalid_projection",
+                ),
+            )
+            return PhaseResult(
+                Outcome.GARBAGE,
+                f"invalid late projection after {_STRUCTURED_REPAIR_ATTEMPTS} repair(s): {rejection}",
+            )
+        instruction = (
+            f"Quill rejected only the contract projection at {staging}: {rejection}. "
+            f"Projection repair {repair_attempt + 1}/{_STRUCTURED_REPAIR_ATTEMPTS}. Edit only that "
+            "staging JSON. Do not edit the repository or frozen source artifact, do not research, "
+            "and do not invent a missing fact. Emit the original task's receipt after writing it."
+        )
+        projected = _repair_llm_session(ctx, phase, model=model, prompt=instruction)
+        mutation = _projection_mutation_error(
+            ctx,
+            evidence=evidence,
+            before_head=before_head,
+            before_worktree=before_worktree,
+        )
+        if mutation is not None:
+            _emit_event(
+                ctx,
+                events.projection_done(
+                    phase.id,
+                    kind=phase.produces_contract,
+                    valid=False,
+                    reason="repository_or_source_mutation",
+                ),
+            )
+            return PhaseResult(Outcome.GARBAGE, mutation)
+        if projected.outcome in (Outcome.CRASH, Outcome.FAILED, Outcome.NEEDS_DECISION):
+            _emit_event(
+                ctx,
+                events.projection_done(
+                    phase.id,
+                    kind=phase.produces_contract,
+                    valid=False,
+                    reason="repair_continuation_failed",
+                ),
+            )
+            return projected
+    assert payload is not None
+    _emit_event(
+        ctx,
+        events.projection_done(
+            phase.id,
+            kind=phase.produces_contract,
+            valid=True,
+        ),
+    )
+    _emit_event(
+        ctx,
+        events.contract_validated(
+            phase.id,
+            kind=phase.produces_contract,
+            status=status.value,
+        ),
+    )
+    try:
+        contract = new_contract(
+            spec=spec,
+            status=status,
+            phase_outcome=result.outcome.value,
+            run_id=ctx.run_id,
+            workflow=ctx.workflow,
+            phase_id=phase.id,
+            phase_type=phase.type,
+            attempt=attempt,
+            source_artifacts=(evidence,),
+            upstream=tuple(upstream_ref(ref) for ref in _upstream_refs(ctx, phase)),
+            payload=payload,
+            git_head=before_head,
+            checkpoint=ctx.phase_checkpoints.get(phase.id),
+            worktree_fingerprint=before_worktree,
+        )
+        ref = publish_contract(ctx.run_dir, contract, default_catalog())
+        if compatibility_artifact is not None:
+            publish_compatibility_view(
+                ctx.run_dir,
+                staging,
+                ctx.artifact_path(compatibility_artifact),
+            )
+    except ContractError as exc:
+        return PhaseResult(Outcome.GARBAGE, f"could not publish phase contract: {exc}")
+    ctx.contracts[phase.id] = ref
+    ctx.contract_corrections.pop(phase.id, None)
+    _emit_event(
+        ctx,
+        events.contract_published(
+            phase.id,
+            kind=ref.kind,
+            version=ref.version,
+            status=ref.status.value,
+            digest=ref.digest,
+            attempt=ref.attempt,
+        ),
+    )
+    return PhaseResult(
+        result.outcome,
+        result.message,
+        question=result.question,
+        result_path=result.result_path,
+        raw_receipt=result.raw_receipt,
+        allow_phase_retry=result.allow_phase_retry,
+        contract_ref=ref,
+    )
+
+
+def _contract_projection_prompt(
+    phase: PhaseDef,
+    *,
+    source: Path,
+    source_sha: str,
+    staging: Path,
+    spec_schema: dict[str, object],
+) -> str:
+    """Render the first and only schema-bearing prompt in an LLM phase attempt."""
+    schema = json.dumps(spec_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (
+        "Your semantic work and self-check are finished. Perform only the final data projection. "
+        f"Read the frozen artifact at {source} (SHA-256 {source_sha}) and write one JSON payload to "
+        f"{staging}. The payload must match this exact schema: {schema}. Copy only facts supported "
+        "by the frozen artifact. Do not research, decide, edit the repository, or edit the frozen "
+        "artifact. Do not add Markdown or prose. If a required semantic fact is absent, instead "
+        "write exactly {\"contract_status\":\"INCOMPLETE\",\"missing\":[{\"field\":\"<field>\","
+        "\"reason\":\"<why absent>\",\"evidence\":\"<artifact anchor>\"}]}. Never invent the "
+        "missing fact. Then emit the receipt line required by the original task."
+    )
+
+
+def _projection_payload(raw: object) -> tuple[ContractStatus, object]:
+    if isinstance(raw, dict) and "contract_status" in raw:
+        if set(raw) != {"contract_status", "missing"} or raw.get("contract_status") != "INCOMPLETE":
+            raise ContractError("projection contract_status form must be exactly INCOMPLETE + missing")
+        return ContractStatus.INCOMPLETE, {"missing": raw.get("missing")}
+    return ContractStatus.COMPLETE, raw
+
+
+def _enrich_delivery_projection(
+    ctx: RunContext, staging: Path, result: PhaseResult
+) -> PhaseResult:
+    """Replace model-authored delivery identity with Git/GitHub-observed authoritative fields."""
+    try:
+        raw = strict_json_loads(staging.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or set(raw) != {"summary", "unresolved"}:
+            raise ContractError("delivery projection must contain only summary and unresolved")
+        git = ctx.deps.git
+        if git is None:
+            raise ContractError("delivery identity is unavailable without Git/GitHub integration")
+        pr = git.pr_for_branch(ctx.branch) if ctx.branch else None
+        if pr is None:
+            pr = git.pr_for_ticket(ctx.ticket)
+        if pr is None:
+            raise ContractError("delivery identity has no pull request for the delivered branch")
+        local_sha = git.local_head_sha()
+        remote_sha = git.pr_head_sha(pr.number)
+        if ctx.branch and pr.branch and ctx.branch != pr.branch:
+            raise ContractError(
+                f"delivery branch mismatch: run branch {ctx.branch!r} != PR branch {pr.branch!r}"
+            )
+        branch = pr.branch or ctx.branch
+        pr_url = pr.url or ctx.pr_url or ""
+        clean = not git.workspace_status().strip()
+        if not branch or not pr_url:
+            raise ContractError("delivery identity is missing branch or pull-request URL")
+        if local_sha != remote_sha:
+            raise ContractError(
+                f"delivery identity mismatch: local {local_sha[:12]} != PR head {remote_sha[:12]}"
+            )
+        if not clean:
+            raise ContractError("delivery left the repository worktree dirty")
+        enriched = {
+            "summary": raw["summary"],
+            "unresolved": raw["unresolved"],
+            "branch": branch,
+            "local_sha": local_sha,
+            "remote_sha": remote_sha,
+            "pr": pr.number,
+            "pr_url": pr_url,
+            "clean": clean,
+        }
+        staging.write_text(
+            json.dumps(enriched, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, GitError, ContractError) as exc:
+        return PhaseResult(Outcome.GARBAGE, f"could not establish delivery identity: {exc}")
+    ctx.pr_number = pr.number
+    ctx.pr_url = pr_url
+    ctx.branch = branch
     return result
+
+
+def _projection_mutation_error(
+    ctx: RunContext,
+    *,
+    evidence: ArtifactRef,
+    before_head: str | None,
+    before_worktree: str | None,
+) -> str | None:
+    try:
+        verify_artifact_ref(ctx.run_dir, evidence)
+    except ContractError as exc:
+        return f"late projection modified its frozen source artifact: {exc}"
+    after_head, after_worktree = repository_identity(ctx.directory)
+    if (after_head, after_worktree) != (before_head, before_worktree):
+        return "late projection modified repository state after the semantic work was frozen"
+    return None
+
+
+def _upstream_refs(ctx: RunContext, phase: PhaseDef) -> tuple[ContractRef, ...]:
+    dependencies = _phase_dependencies(ctx, phase)
+    forward = tuple(
+        ref
+        for target in dependencies
+        for ref in _dependency_contract_refs(ctx, target)
+    )
+    retry = ctx.retry_contracts.get(phase.id)
+    return (*forward, retry) if retry is not None else forward
+
+
+def _dependency_contract_ids(ctx: RunContext, target: str) -> tuple[str, ...]:
+    configured = ctx.config.phase(target)
+    if configured is None:
+        return (target,)
+    if configured.audits:
+        return tuple(f"{target}.{audit.id}" for audit in configured.audits)
+    if configured.is_fanout:
+        return tuple(f"{target}.{slugify(model)}" for model in configured.models)
+    return (target,)
+
+
+def _phase_dependencies(ctx: RunContext, phase: PhaseDef) -> tuple[str, ...]:
+    graph = phase_contract_dependencies(ctx.config)
+    if phase.id in graph:
+        return graph[phase.id]
+    parents = [candidate for candidate in graph if phase.id.startswith(candidate + ".")]
+    return graph[max(parents, key=len)] if parents else ()
+
+
+def _dependency_contract_refs(ctx: RunContext, target: str) -> tuple[ContractRef, ...]:
+    return tuple(
+        ctx.contracts[contract_id]
+        for contract_id in _dependency_contract_ids(ctx, target)
+        if contract_id in ctx.contracts
+    )
+
+
+def _contract_handoff_instruction(ctx: RunContext, phase: PhaseDef) -> str:
+    """Validated immutable contract and evidence paths supplied to one consumer task."""
+    dependencies = _phase_dependencies(ctx, phase)
+    rows: list[str] = []
+    for target in dependencies:
+        for ref in _dependency_contract_refs(ctx, target):
+            loaded = load_contract(ctx.run_dir / ref.path, default_catalog(), run_dir=ctx.run_dir)
+            evidence = ", ".join(
+                str((ctx.run_dir / item.snapshot).resolve()) for item in loaded.source_artifacts
+            )
+            rows.append(
+                f"{ref.phase_id}: contract={(ctx.run_dir / ref.path).resolve()} "
+                f"digest={ref.digest}; frozen evidence={evidence or '(none)'}"
+            )
+    if retry := ctx.retry_contracts.get(phase.id):
+        loaded = load_contract(ctx.run_dir / retry.path, default_catalog(), run_dir=ctx.run_dir)
+        evidence = ", ".join(
+            str((ctx.run_dir / item.snapshot).resolve()) for item in loaded.source_artifacts
+        )
+        rows.append(
+            f"{retry.phase_id}: retry contract={(ctx.run_dir / retry.path).resolve()} "
+            f"digest={retry.digest}; frozen evidence={evidence or '(none)'}"
+        )
+    if not rows:
+        return ""
+    return (
+        " VALIDATED HANDOFFS (the contracts are authoritative and the frozen evidence is bound "
+        "by hash): " + " | ".join(rows) + "."
+    )
+
+
+def _validate_upstream_contracts(ctx: RunContext, phase: PhaseDef) -> PhaseResult | None:
+    if not phase.produces_contract:
+        return None
+    dependencies = phase_contract_dependencies(ctx.config).get(phase.id, ())
+    for target in dependencies:
+        expected_ids = _dependency_contract_ids(ctx, target)
+        refs = _dependency_contract_refs(ctx, target)
+        if len(refs) != len(expected_ids):
+            missing = [contract_id for contract_id in expected_ids if contract_id not in ctx.contracts]
+            return PhaseResult(
+                Outcome.GARBAGE,
+                f"phase '{phase.id}' is missing required validated contract(s) from '{target}': "
+                + ", ".join(missing),
+            )
+        for ref in refs:
+            identifier = f"{ref.kind}/v{ref.version}"
+            if identifier not in phase.accepts_contracts:
+                return PhaseResult(
+                    Outcome.GARBAGE,
+                    f"phase '{phase.id}' cannot consume {identifier} from '{ref.phase_id}'",
+                )
+            if ref.status is not ContractStatus.COMPLETE:
+                return PhaseResult(
+                    Outcome.GARBAGE,
+                    f"phase '{phase.id}' requires COMPLETE contract from '{ref.phase_id}', got "
+                    f"{ref.status.value}",
+                )
+            try:
+                loaded = load_contract(
+                    ctx.run_dir / ref.path,
+                    default_catalog(),
+                    run_dir=ctx.run_dir,
+                )
+            except ContractError as exc:
+                return PhaseResult(
+                    Outcome.GARBAGE,
+                    f"phase '{phase.id}' rejected contract from '{ref.phase_id}': {exc}",
+                )
+            if loaded.digest != ref.digest or loaded.phase_id != ref.phase_id:
+                return PhaseResult(
+                    Outcome.GARBAGE,
+                    f"phase '{phase.id}' contract reference for '{ref.phase_id}' does not match "
+                    "durable data",
+                )
+    return None
 
 
 def _repair_llm_session(
@@ -2059,6 +3113,9 @@ def _producer_task(
         f"TASK: {phase.label or phase.id} for ticket {ctx.ticket} (see TICKET block above). "
         f"Write your artifact to {_abs_artifact(ctx, artifact)}."
     )
+    if correction := ctx.contract_corrections.get(phase.id):
+        task += f" SEMANTIC CORRECTION REQUIRED FROM THE PREVIOUS ATTEMPT: {correction}"
+    task += _contract_handoff_instruction(ctx, phase)
     inputs = [_abs_artifact(ctx, name) for name in _input_artifacts(ctx, phase)]
     if inputs:
         task += f" Required handoff inputs: {', '.join(inputs)}."
@@ -2190,15 +3247,21 @@ def _review_task(
     # a finalizer) but owns its file outright, so it keeps the full-array contract.
     delta = verify and phase.gates
     structured_line = ""
-    if phase.structured_findings:
+    if phase.structured_findings and not phase.produces_contract:
         structured_line = (
             _STRUCTURED_DELTA_INSTRUCTION if delta else _STRUCTURED_FINDINGS_INSTRUCTION
         )
-    prior_line = (
-        _prior_findings_instruction(prior_findings, delta=delta, blocking_ids=blocking_ids)
-        if verify
-        else ""
-    )
+    prior_line = ""
+    if verify:
+        prior_line = (
+            _prior_notes_instruction(prior_findings, blocking_ids=blocking_ids)
+            if phase.produces_contract
+            else _prior_findings_instruction(
+                prior_findings,
+                delta=delta,
+                blocking_ids=blocking_ids,
+            )
+        )
     owner_line = ""
     if phase.selective_on_block:
         allowed = ", ".join(phase.selective_on_block)
@@ -2206,11 +3269,20 @@ def _review_task(
             f" Every OPEN CRITICAL/MAJOR finding must set owner to exactly one of: {allowed}. "
             "Choose the research lane that must rerun to resolve it. Advisory findings may omit owner."
         )
+    correction = ctx.contract_corrections.get(phase.id)
+    correction_line = (
+        f" SEMANTIC CORRECTION REQUIRED FROM THE PREVIOUS ATTEMPT: {correction}"
+        if correction
+        else ""
+    )
+    handoff_line = _contract_handoff_instruction(ctx, phase)
     return (
         f"TASK ({mode}): {phase.label or phase.id} for ticket {ctx.ticket} "
         f"(see TICKET block above).{against_line} "
-        f"Write your findings to {_abs_artifact(ctx, findings)}."
-        f"{structured_line}{owner_line}{prior_line}{limit_line}{verify_line}"
+        f"Write your {'natural review notes' if phase.produces_contract else 'findings'} to "
+        f"{_abs_artifact(ctx, findings)}."
+        f"{structured_line}{owner_line}{prior_line}{limit_line}{verify_line}{correction_line}"
+        f"{handoff_line}"
     )
 
 
@@ -2224,13 +3296,18 @@ def _finalizer_task(
 ) -> str:
     paths = [_abs_artifact(ctx, p) for p in _reconciled_findings(ctx, phase)]
     mode = "VERIFICATION mode" if verify else "finalize mode"
-    artifact = phase.artifact or f"{phase.id}.md"
+    compatibility_artifact = phase.artifact or f"{phase.id}.md"
+    artifact = (
+        _review_notes_name(phase, phase.model or phase.id)
+        if phase.produces_contract
+        else compatibility_artifact
+    )
     listed = ", ".join(paths) if paths else "(no prior findings found)"
     verify_line = f" {_VERIFY_INSTRUCTION}" if verify else ""
     limit_line = _artifact_limit_instruction(phase)
     delta = verify and phase.gates
     structured_line = ""
-    if phase.structured_findings:
+    if phase.structured_findings and not phase.produces_contract:
         structured_line = (
             _STRUCTURED_DELTA_INSTRUCTION if delta else _STRUCTURED_FINDINGS_INSTRUCTION
         )
@@ -2254,15 +3331,24 @@ def _finalizer_task(
         if phase.structured_findings
         else (
             " Preserve every input CRITICAL/MAJOR finding ID exactly in the final blocking list."
-            if artifact == PR_REVIEW_NAME
+            if compatibility_artifact == PR_REVIEW_NAME
             else ""
         )
     )
+    correction = ctx.contract_corrections.get(phase.id)
+    correction_line = (
+        f" SEMANTIC CORRECTION REQUIRED FROM THE PREVIOUS ATTEMPT: {correction}"
+        if correction
+        else ""
+    )
+    handoff_line = _contract_handoff_instruction(ctx, phase)
     return (
         f"TASK ({mode}): {phase.label or phase.id} for ticket {ctx.ticket}. "
         f"Reconcile these reviewers' findings files: {listed}. "
-        f"Write the reconciled review to {_abs_artifact(ctx, artifact)}."
+        f"Write the reconciled {'natural review notes' if phase.produces_contract else 'review'} "
+        f"to {_abs_artifact(ctx, artifact)}."
         f"{structured_line}{reconciliation_line}{prior_line}{limit_line}{verify_line}"
+        f"{correction_line}{handoff_line}"
     )
 
 
@@ -2326,6 +3412,31 @@ def _prior_findings_instruction(
         "required_outcome exactly into the new findings artifact. Update only status and evidence "
         "when current repository evidence proves resolution. A revision-suffixed ID means a later "
         "audit reused an existing ID for a different defect; preserve both findings independently."
+    )
+
+
+def _prior_notes_instruction(
+    findings: tuple[Finding, ...], *, blocking_ids: frozenset[str] | None = None
+) -> str:
+    """Semantic verification context with no serialization or downstream schema language."""
+    blockers = [finding for finding in findings if finding.blocks]
+    if not blockers:
+        return ""
+    listed = "; ".join(
+        f"{finding.id} ({finding.severity}): {finding.title} — required: "
+        f"{finding.required_outcome}"
+        for finding in blockers
+    )
+    gating = (
+        ", ".join(sorted(blocking_ids))
+        if blocking_ids is not None
+        else ", ".join(finding.id for finding in blockers)
+    )
+    return (
+        f" Prior findings to verify against current evidence: {listed}. Findings currently able "
+        f"to gate this round: {gating or '(none)'}. Discuss each prior ID explicitly in the notes, "
+        "including whether its required outcome is now evidenced. Preserve the meaning and owner "
+        "of prior findings; do not silently drop one."
     )
 
 

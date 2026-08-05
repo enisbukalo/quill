@@ -32,6 +32,7 @@ from quill.runctx import (
     ShouldStop,
     PhaseCheckpointHook,
 )
+from quill.restart import SEED_NAME, restart_contract_refs
 
 # Re-exported so the CLI/API import these from one place (their historical home).
 __all__ = [
@@ -117,6 +118,10 @@ def run_pipeline(
         clear_prefix_cache=clear_prefix_cache,
         checkpoint_phase=checkpoint_phase,
     )
+    if start_phase is not None and (run_dir / SEED_NAME).is_file():
+        ctx.contracts.update(
+            restart_contract_refs(run_dir, config=config, start_phase=start_phase)
+        )
     return engine.run_phases(ctx, start_phase=start_phase)
 
 

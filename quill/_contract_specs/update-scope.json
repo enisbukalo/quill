@@ -1,0 +1,19 @@
+{
+  "kind": "quill.update.scope",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Map every feedback item to an evidenced in-scope correction or a needs-decision item."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "feedback_items", "unknowns", "obligations"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "feedback_items": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unknowns": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "obligations": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

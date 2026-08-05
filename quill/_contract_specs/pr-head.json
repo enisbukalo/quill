@@ -1,0 +1,9 @@
+{
+  "kind": "quill.pr-head",
+  "version": 1,
+  "phase_types": ["mechanical"],
+  "steps": ["pr_head_guard"],
+  "allowed_statuses": ["COMPLETE", "UNAVAILABLE"],
+  "semantic_obligations": [],
+  "payload": {"type": "object", "required": ["pr", "expected", "observed", "matches"], "additional_properties": false, "properties": {"pr": {"type": "integer"}, "expected": {"type": "string"}, "observed": {"type": "string"}, "matches": {"type": "boolean"}}}
+}

@@ -30,6 +30,11 @@ SELF_CHECK_STARTED = "self_check_started"
 SELF_CHECK_DONE = "self_check_done"
 SELF_FIX_STARTED = "self_fix_started"
 SELF_FIX_DONE = "self_fix_done"
+PROJECTION_STARTED = "projection_started"
+PROJECTION_DONE = "projection_done"
+CONTRACT_VALIDATED = "contract_validated"
+CONTRACT_INCOMPLETE = "contract_incomplete"
+CONTRACT_PUBLISHED = "contract_published"
 PHASE_DONE = "phase_done"
 GATE_VERDICT = "gate_verdict"
 RETRY = "retry"
@@ -101,13 +106,23 @@ def run_started(
 
 
 def run_plan(
-    summary: str, *, lines: list[str] | None = None, phase_graph: PhaseGraph | None = None
+    summary: str,
+    *,
+    lines: list[str] | None = None,
+    phase_graph: PhaseGraph | None = None,
+    phase_set_hash: str | None = None,
 ) -> Event:
     """The run's execution plan (runner, build cmds, ordered phases + models) as a preformatted
     block. Emitted right after ``run_started`` so the terminal and file log both show what the run
     intends to do before any phase runs. ``lines`` carries the same content structured, for API
     consumers that render their own layout."""
-    return _event(RUN_PLAN, summary=summary, lines=lines, phase_graph=phase_graph)
+    return _event(
+        RUN_PLAN,
+        summary=summary,
+        lines=lines,
+        phase_graph=phase_graph,
+        phase_set_hash=phase_set_hash,
+    )
 
 
 def phase_started(
@@ -191,6 +206,41 @@ def self_fix_done(phase: str, label: str, *, repaired: bool, duration_s: float) 
     )
 
 
+def projection_started(phase: str, *, kind: str, attempt: int) -> Event:
+    return _event(PROJECTION_STARTED, phase=phase, contract_kind=kind, attempt=attempt)
+
+
+def projection_done(phase: str, *, kind: str, valid: bool, reason: str | None = None) -> Event:
+    return _event(PROJECTION_DONE, phase=phase, contract_kind=kind, valid=valid, reason=reason)
+
+
+def contract_validated(phase: str, *, kind: str, status: str) -> Event:
+    return _event(CONTRACT_VALIDATED, phase=phase, contract_kind=kind, contract_status=status)
+
+
+def contract_incomplete(phase: str, *, kind: str, missing_count: int) -> Event:
+    return _event(
+        CONTRACT_INCOMPLETE,
+        phase=phase,
+        contract_kind=kind,
+        missing_count=missing_count,
+    )
+
+
+def contract_published(
+    phase: str, *, kind: str, version: int, status: str, digest: str, attempt: int
+) -> Event:
+    return _event(
+        CONTRACT_PUBLISHED,
+        phase=phase,
+        contract_kind=kind,
+        contract_version=version,
+        contract_status=status,
+        contract_digest=digest,
+        attempt=attempt,
+    )
+
+
 def phase_done(
     phase: str,
     label: str,
@@ -200,6 +250,10 @@ def phase_done(
     duration_s: float | None = None,
     tools: dict[str, int] | None = None,
     reason: str | None = None,
+    contract_kind: str | None = None,
+    contract_version: int | None = None,
+    contract_status: str | None = None,
+    contract_digest: str | None = None,
 ) -> Event:
     """``tools`` is the phase's tool-call tally (``{"edit": 24, "read": 31, ...}``), which the
     console renders as a breakdown and the file log keeps as the phase's permanent record. A phase
@@ -214,6 +268,10 @@ def phase_done(
         duration_s=duration_s,
         tools=tools or None,
         reason=reason,
+        contract_kind=contract_kind,
+        contract_version=contract_version,
+        contract_status=contract_status,
+        contract_digest=contract_digest,
     )
 
 
@@ -226,6 +284,10 @@ def gate_verdict(
     duration_s: float | None = None,
     tools: dict[str, int] | None = None,
     reason: str | None = None,
+    contract_kind: str | None = None,
+    contract_version: int | None = None,
+    contract_status: str | None = None,
+    contract_digest: str | None = None,
 ) -> Event:
     """A gated phase reports its verdict here instead of via :func:`phase_done`, so it carries the
     same ``tools`` tally — else every reviewer/finalizer would silently lose its tool counts.
@@ -242,6 +304,10 @@ def gate_verdict(
         duration_s=duration_s,
         tools=tools or None,
         reason=reason,
+        contract_kind=contract_kind,
+        contract_version=contract_version,
+        contract_status=contract_status,
+        contract_digest=contract_digest,
     )
 
 

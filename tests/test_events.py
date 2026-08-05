@@ -56,6 +56,41 @@ def test_phase_done_carries_terminal_reason() -> None:
     assert event["reason"] == "missing receipt"
 
 
+def test_contract_events_are_bounded_metadata_without_payloads() -> None:
+    samples = [
+        events.projection_started("plan", kind="quill.plan/v1", attempt=2),
+        events.projection_done(
+            "plan", kind="quill.plan/v1", valid=False, reason="invalid_json"
+        ),
+        events.contract_validated("plan", kind="quill.plan/v1", status="COMPLETE"),
+        events.contract_incomplete("plan", kind="quill.plan/v1", missing_count=2),
+        events.contract_published(
+            "plan",
+            kind="quill.plan",
+            version=1,
+            status="COMPLETE",
+            digest="a" * 64,
+            attempt=2,
+        ),
+    ]
+    for event in samples:
+        assert "payload" not in event
+        assert "schema" not in event
+        assert "artifact" not in event
+        assert len(str(event)) < 500
+
+    terminal = events.phase_done(
+        "plan",
+        "plan",
+        verdict="DONE",
+        contract_kind="quill.plan",
+        contract_version=1,
+        contract_status="COMPLETE",
+        contract_digest="a" * 64,
+    )
+    assert terminal["contract_digest"] == "a" * 64
+
+
 # -- RunState.fold_event ----------------------------------------------------------
 
 
@@ -190,6 +225,31 @@ def test_fold_self_fix_events_projects_live_and_completed_state() -> None:
     from quill_api.projections import run_summary
 
     assert run_summary(state, lambda _run_id: None).self_fixes == {"plan": "completed"}
+
+
+def test_fold_contract_lifecycle_keeps_latest_attempt_metadata() -> None:
+    state = RunState(run_id="r1", ticket=42)
+    state.fold_event(events.projection_started("plan", kind="quill.plan/v1", attempt=2))
+    assert state.contract_states["plan"] == {
+        "phase": "plan",
+        "kind": "quill.plan/v1",
+        "state": "projecting",
+        "attempt": 2,
+    }
+    state.fold_event(
+        events.contract_published(
+            "plan",
+            kind="quill.plan",
+            version=1,
+            status="COMPLETE",
+            digest="b" * 64,
+            attempt=2,
+        )
+    )
+    assert state.contract_states["plan"]["state"] == "published"
+    assert state.contract_states["plan"]["attempt"] == 2
+    assert state.contract_states["plan"]["status"] == "COMPLETE"
+    assert state.contract_states["plan"]["digest"] == "b" * 64
 
 
 def test_fold_gate_verdict_records_history() -> None:

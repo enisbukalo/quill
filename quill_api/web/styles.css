@@ -530,6 +530,10 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .phase-self-check-loop rect { fill: var(--phase-node-fill); stroke: currentColor; stroke-width: 1.25; }
 .phase-self-fix-loop rect { fill: var(--phase-node-fill); stroke: currentColor; stroke-width: 1.25; }
 .phase-self-check-loop text, .phase-self-fix-loop text { fill: currentColor; font: 800 8px ui-monospace, monospace; letter-spacing: .04em; }
+.phase-node-contract { fill: currentColor; font: 800 8px ui-monospace, monospace; letter-spacing: .03em; }
+.phase-node-contract[data-contract-state="published"], .phase-node-contract[data-contract-state="validated"] { fill: var(--green); }
+.phase-node-contract[data-contract-state="incomplete"], .phase-node-contract[data-contract-state="rejected"] { fill: var(--red); }
+.phase-edge-contract { fill: var(--muted); font: 700 7px ui-monospace, monospace; letter-spacing: .02em; }
 .phase-self-fix-loop[data-state="active"] { animation: phase-loop-pulse 1.2s ease-in-out infinite; }
 .phase-row-nested .phase-row-label { padding-left: 24px; }
 .phase-row-branch { color: var(--cyan); display: inline-block; margin-right: 8px; }

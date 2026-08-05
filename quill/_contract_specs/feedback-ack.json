@@ -1,0 +1,9 @@
+{
+  "kind": "quill.feedback-ack",
+  "version": 1,
+  "phase_types": ["mechanical"],
+  "steps": ["acknowledge_pr_feedback"],
+  "allowed_statuses": ["COMPLETE", "PARTIAL", "UNAVAILABLE"],
+  "semantic_obligations": [],
+  "payload": {"type": "object", "required": ["pr", "commit", "acknowledged_ids", "resolved_threads", "warnings", "commented"], "additional_properties": false, "properties": {"pr": {"type": "integer"}, "commit": {"type": "string"}, "acknowledged_ids": {"type": "array", "items": {"type": "string"}}, "resolved_threads": {"type": "array", "items": {"type": "string"}}, "warnings": {"type": "array", "items": {"type": "string"}}, "commented": {"type": "boolean"}}}
+}

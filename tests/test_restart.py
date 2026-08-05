@@ -6,8 +6,27 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
+from quill.config import load_config
+from quill.contracts import (
+    ContractStatus,
+    default_catalog,
+    new_contract,
+    publish_contract,
+    snapshot_artifact,
+    upstream_ref,
+)
 from quill.eventlog import EventLog
-from quill.restart import model_overrides, seed_events, seed_transcripts, write_seed
+from quill.restart import (
+    RestartError,
+    model_overrides,
+    prepare_contract_restart,
+    restart_contract_refs,
+    seed_events,
+    seed_transcripts,
+    write_seed,
+)
 from quill.telemetry import build_breakdown
 from quill_api.projections import run_summary
 from quill_api.state import RunState, RunStatus
@@ -131,6 +150,8 @@ def test_restart_lineage_replays_graph_history_and_usage(tmp_path: Path) -> None
         phase="build",
         start_phase="build",
         executions=executions,
+        phase_set_hash="hash-v1",
+        checkpoint="checkpoint-1",
     )
     for name in seed_transcripts(target):
         shutil.copy2(source / name, target / name)
@@ -187,5 +208,214 @@ def test_restart_models_prefer_observed_execution_and_seed_paths_are_safe(
         phase="test",
         start_phase="test",
         executions=executions,
+        phase_set_hash="hash-v1",
+        checkpoint="checkpoint-1",
     )
     assert seed_transcripts(target) == {"stream-plan-model-1.jsonl"}
+
+
+def _restart_config(root: Path):
+    personas = root / "personas"
+    personas.mkdir(parents=True)
+    for name in ("branch.md", "plan.md", "impl.md"):
+        (personas / name).write_text("persona", encoding="utf-8")
+    (root / "quillfolio.toml").write_text(
+        """
+[repo]
+name = "me/repo"
+
+[runner]
+kind = "opencode"
+
+[build]
+command = "true"
+test = "true"
+
+[[phase]]
+id = "branch"
+type = "producer"
+persona = "branch.md"
+model = "model"
+artifact = "branch.md"
+produces_contract = "quill.artifact/v1"
+
+[[phase]]
+id = "plan"
+type = "producer"
+persona = "plan.md"
+model = "model"
+artifact = "plan.md"
+inputs = ["branch"]
+produces_contract = "quill.plan/v1"
+accepts_contracts = ["quill.artifact/v1"]
+
+[[phase]]
+id = "impl"
+type = "producer"
+persona = "impl.md"
+model = "model"
+artifact = "impl.md"
+inputs = ["plan"]
+produces_contract = "quill.implementation/v1"
+accepts_contracts = ["quill.plan/v1"]
+""",
+        encoding="utf-8",
+    )
+    return load_config(root, personas_root=personas)
+
+
+def _publish_restart_contracts(source: Path) -> tuple[str, str]:
+    catalog = default_catalog()
+    (source / "branch.md").write_text("branch evidence", encoding="utf-8")
+    branch_artifact = snapshot_artifact(source, source / "branch.md", "branch", 1)
+    branch = new_contract(
+        spec=catalog.resolve("quill.artifact/v1"),
+        status=ContractStatus.COMPLETE,
+        phase_outcome="DONE",
+        run_id="source",
+        workflow="ticket",
+        phase_id="branch",
+        phase_type="producer",
+        attempt=1,
+        source_artifacts=(branch_artifact,),
+        upstream=(),
+        payload={
+            "summary": "branch",
+            "outputs": [],
+            "verification": [],
+            "unknowns": [],
+            "obligations": [],
+        },
+    )
+    branch_ref = publish_contract(source, branch, catalog)
+    (source / "plan.md").write_text("plan evidence", encoding="utf-8")
+    plan_artifact = snapshot_artifact(source, source / "plan.md", "plan", 1)
+    plan = new_contract(
+        spec=catalog.resolve("quill.plan/v1"),
+        status=ContractStatus.COMPLETE,
+        phase_outcome="DONE",
+        run_id="source",
+        workflow="ticket",
+        phase_id="plan",
+        phase_type="producer",
+        attempt=1,
+        source_artifacts=(plan_artifact,),
+        upstream=(upstream_ref(branch_ref),),
+        payload={
+            "summary": "plan",
+            "decisions": [],
+            "phases": ["implement"],
+            "evidence": ["plan evidence"],
+            "verification": [],
+            "unknowns": [],
+        },
+    )
+    plan_ref = publish_contract(source, plan, catalog)
+    return branch_ref.path, plan_ref.path
+
+
+def _write_contract_seed(target: Path, config_hash: str) -> None:
+    write_seed(
+        target,
+        source_run_id="source",
+        source_sequence=3,
+        phase="impl",
+        start_phase="impl",
+        executions=[],
+        phase_set_hash=config_hash,
+        checkpoint="checkpoint-3",
+    )
+
+
+def test_restart_copies_only_validated_transitive_contract_closure(tmp_path: Path) -> None:
+    config = _restart_config(tmp_path / "repo")
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    branch_path, plan_path = _publish_restart_contracts(source)
+    (source / "unrelated.txt").write_text("must not copy", encoding="utf-8")
+    (source / "stream-impl-model-1.jsonl").write_text("{}\n", encoding="utf-8")
+    _write_contract_seed(target, config.phase_set_hash())
+
+    refs = prepare_contract_restart(
+        source,
+        target,
+        config=config,
+        start_phase="impl",
+        source_run_id="source",
+        checkpoint="checkpoint-3",
+    )
+
+    assert set(refs) == {"branch", "plan"}
+    assert (target / branch_path).is_file()
+    assert (target / plan_path).is_file()
+    assert not (target / "unrelated.txt").exists()
+    assert restart_contract_refs(target, config=config, start_phase="impl") == refs
+
+
+def test_restart_rejects_symlinked_target_parent_without_writing_outside(tmp_path: Path) -> None:
+    config = _restart_config(tmp_path / "repo")
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    outside = tmp_path / "outside"
+    source.mkdir()
+    outside.mkdir()
+    _publish_restart_contracts(source)
+    _write_contract_seed(target, config.phase_set_hash())
+    (target / "contracts").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RestartError, match="symlink component"):
+        prepare_contract_restart(
+            source,
+            target,
+            config=config,
+            start_phase="impl",
+            source_run_id="source",
+            checkpoint="checkpoint-3",
+        )
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("damage", ["artifact", "contract", "seed"])
+def test_restart_rejects_tampered_or_partial_closure(tmp_path: Path, damage: str) -> None:
+    config = _restart_config(tmp_path / "repo")
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    _publish_restart_contracts(source)
+    _write_contract_seed(target, config.phase_set_hash())
+    if damage == "artifact":
+        (source / "work" / "branch" / "attempt-1.md").write_text("tampered", encoding="utf-8")
+        with pytest.raises(RestartError, match="invalid latest restart contract|artifact"):
+            prepare_contract_restart(
+                source,
+                target,
+                config=config,
+                start_phase="impl",
+                source_run_id="source",
+                checkpoint="checkpoint-3",
+            )
+        return
+
+    prepare_contract_restart(
+        source,
+        target,
+        config=config,
+        start_phase="impl",
+        source_run_id="source",
+        checkpoint="checkpoint-3",
+    )
+    if damage == "contract":
+        path = target / "contracts" / "plan" / "attempt-1.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["payload"]["summary"] = "tampered"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        with pytest.raises(RestartError, match="entry does not match|invalid inherited"):
+            restart_contract_refs(target, config=config, start_phase="impl")
+    else:
+        seed_path = target / "restart-lineage.json"
+        seed = json.loads(seed_path.read_text(encoding="utf-8"))
+        seed["contracts"] = seed["contracts"][:-1]
+        seed_path.write_text(json.dumps(seed), encoding="utf-8")
+        with pytest.raises(RestartError, match="artifact inventory|missing upstream|missing direct"):
+            restart_contract_refs(target, config=config, start_phase="impl")

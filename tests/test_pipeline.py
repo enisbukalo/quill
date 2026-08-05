@@ -20,8 +20,10 @@ from quill.pipeline import PipelineDeps, make_run_id, run_pipeline
 # The task line names the ABSOLUTE path the worker must write; the spawn fake writes there to
 # mirror a real worker. The engine injects absolute paths so the worker can't misresolve them.
 _ARTIFACT_RE = re.compile(
-    r"[Ww]rite (?:your artifact|your findings|the reconciled review) to (\S+\.md)"
+    r"[Ww]rite (?:your artifact|your findings|your natural review notes|the reconciled review|"
+    r"the reconciled natural review notes) to (\S+\.(?:md|json))"
 )
+_PROJECTION_RE = re.compile(r"write one JSON payload to (\S+\.json)")
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +38,6 @@ def repo_dir(tmp_path: Path) -> Path:
     config_file = init_config(tmp_path)
     seed_personas()
     text = config_file.read_text(encoding="utf-8")
-    text = text.replace('kind = ""', 'kind = "opencode"')
     text = text.replace('command = ""', 'command = "make"')
     text = text.replace('test    = ""', 'test    = "make test"')
     config_file.write_text(text, encoding="utf-8")
@@ -103,6 +104,8 @@ def _spawn_returning(
     """Spawn fake keyed by agent (= phase id), wrapping the receipt in opencode's JSON shape and
     writing the phase's artifact into the run dir so the engine's existence check passes."""
 
+    latest: dict[str, str] = {}
+
     def spawn(
         agent: str,
         preset: str,
@@ -115,10 +118,118 @@ def _spawn_returning(
         abort_reason: object = None,
     ) -> str:
         receipt = receipts.get(agent, default)
+        latest[agent] = receipt
         _write_artifact_for(repo_dir, prompt, receipt)
         return json.dumps({"type": "text", "text": receipt})
 
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        receipt = latest.get(agent, receipts.get(agent, default))
+        _write_projection_for(agent, prompt, receipt)
+        return json.dumps({"type": "text", "text": receipt})
+
+    spawn.repair_session = repair  # type: ignore[attr-defined]
+
     return spawn
+
+
+def _write_projection_for(agent: str, prompt: str, receipt: str) -> None:
+    match = _PROJECTION_RE.search(prompt)
+    if match is None:
+        return
+    path = Path(match.group(1))
+    if '"dispositions"' in prompt:
+        payload: object = {
+            "schema_version": 1,
+            "dispositions": [
+                {
+                    "id": "F1",
+                    "status": "RESOLVED" if receipt.startswith("PASS") else "OPEN",
+                    "evidence": "test fixture verification",
+                }
+            ],
+            "new_findings": [],
+        }
+    elif agent.startswith(("research_gate", "review_")):
+        findings = []
+        if receipt.startswith("BLOCK"):
+            finding = {
+                "id": "F1",
+                "severity": "MAJOR",
+                "status": "OPEN",
+                "title": "Scripted blocker",
+                "requirement": "Complete the required behavior",
+                "evidence": "test fixture",
+                "failure_scenario": "The requirement remains unmet",
+                "required_outcome": "Satisfy the requirement",
+            }
+            if agent == "research_gate":
+                finding["owner"] = "research_technical"
+            findings.append(finding)
+        payload = {"schema_version": 1, "findings": findings}
+    elif agent == "research_requirements":
+        payload = {
+            "summary": "requirements",
+            "requirements": ["R1"],
+            "evidence": ["ticket:R1"],
+            "unknowns": [],
+            "obligations": ["Preserve R1"],
+        }
+    elif agent == "research_architecture":
+        payload = {
+            "summary": "architecture",
+            "existing_seams": [],
+            "proposed_seams": ["Implement R1"],
+            "evidence": ["repository fixture"],
+            "unknowns": [],
+            "obligations": ["Preserve ownership"],
+        }
+    elif agent == "research_technical":
+        payload = {
+            "summary": "technical",
+            "contracts": ["Local API"],
+            "evidence": ["local API fixture"],
+            "unknowns": [],
+            "obligations": ["Verify behavior"],
+        }
+    elif agent == "plan":
+        payload = {
+            "summary": "plan",
+            "decisions": ["Implement R1"],
+            "phases": ["Implement", "Verify"],
+            "evidence": ["research contracts"],
+            "verification": ["Run tests"],
+            "unknowns": [],
+        }
+    elif agent == "impl":
+        payload = {
+            "summary": "implemented",
+            "changed_files": [],
+            "verification": ["Tests delegated to mechanical gate"],
+            "unresolved": [],
+        }
+    elif agent == "commit":
+        payload = {"summary": "delivered", "unresolved": []}
+    else:
+        raise AssertionError(f"no projection fixture for {agent}")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _with_repair(spawn: Spawner, **kwargs: object) -> PipelineDeps:
+    return PipelineDeps(
+        spawn=spawn,
+        session_repair=spawn.repair_session,  # type: ignore[attr-defined]
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 class RecordingRunner:
@@ -143,6 +254,7 @@ def _record() -> tuple[list[Event], Callable[[Event], None]]:
 # All reviewers PASS / DONE so the happy path flows to the end. Keyed by the default config's
 # phase ids: review_plan gates (PASS), review_impl fans out (DONE), review_impl_final gates (PASS).
 _GREEN = {
+    "research_gate": "PASS: ok",
     "review_plan": "PASS: ok",
     "review_impl": "DONE: findings",
     "review_impl_final": "PASS: ok",
@@ -155,16 +267,36 @@ def _git_with_ticket() -> GitOps:
     Real runs (CLI/API) always wire a GitOps. These fixtures mirror that — without it the engine's
     ticket guard fails the run for an empty body.
     """
-    return GitOps(
-        run=RecordingRunner(returns={"issue view": json.dumps({"title": "T", "body": "b"})})
-    )
+    return GitOps(run=RecordingRunner(returns=_git_responses("T", "b")))
+
+
+def _git_responses(title: str, body: str) -> dict[str, str]:
+    return {
+        "issue view": json.dumps({"title": title, "body": body}),
+        "gh pr list": json.dumps(
+            [
+                {
+                    "number": 7,
+                    "headRefName": "feature/ticket-7",
+                    "title": "Tickets #1 #7 #42",
+                    "body": "Closes #1, #7, and #42",
+                    "url": "https://example.test/pr/7",
+                    "headRefOid": "abc123",
+                }
+            ]
+        ),
+        "git rev-parse HEAD": "abc123",
+        "headRefOid": json.dumps({"headRefOid": "abc123"}),
+        "git status --porcelain": "",
+    }
 
 
 def test_run_drives_all_phases(repo_dir: Path) -> None:
     seen, on_event = _record()
-    deps = PipelineDeps(
+    spawn = _spawn_returning(repo_dir, _GREEN)
+    deps = _with_repair(
         loader=FakeLoader(),
-        spawn=_spawn_returning(repo_dir, _GREEN),
+        spawn=spawn,
         git=_git_with_ticket(),
         build_test=lambda _c, _selection: (True, "green"),
     )
@@ -176,7 +308,6 @@ def test_run_drives_all_phases(repo_dir: Path) -> None:
         "research_requirements",
         "research_architecture",
         "research_technical",
-        "research_synthesis",
         "research_gate",
         "plan",
         "review_plan",
@@ -191,9 +322,10 @@ def test_run_drives_all_phases(repo_dir: Path) -> None:
 
 
 def test_run_dir_created(repo_dir: Path) -> None:
-    deps = PipelineDeps(
+    spawn = _spawn_returning(repo_dir, _GREEN)
+    deps = _with_repair(
         loader=FakeLoader(),
-        spawn=_spawn_returning(repo_dir, _GREEN),
+        spawn=spawn,
         git=_git_with_ticket(),
         build_test=lambda _c, _selection: (True, ""),
     )
@@ -209,9 +341,10 @@ def test_plan_gate_block_with_no_retry_fails(repo_dir: Path) -> None:
     config_file.write_text(
         config_file.read_text().replace("retry_budget = 1", "retry_budget = 0"), encoding="utf-8"
     )
-    deps = PipelineDeps(
+    spawn = _spawn_returning(repo_dir, {**_GREEN, "review_plan": "BLOCK: weak"})
+    deps = _with_repair(
         loader=FakeLoader(),
-        spawn=_spawn_returning(repo_dir, {**_GREEN, "review_plan": "BLOCK: weak"}),
+        spawn=spawn,
         git=_git_with_ticket(),
         build_test=lambda _c, _selection: (True, ""),
     )
@@ -224,6 +357,7 @@ def test_plan_gate_revise_then_verify_passes(repo_dir: Path) -> None:
     """BLOCK on first review, then a revise→verify round that PASSes (budget=1)."""
     seen, on_event = _record()
     calls = {"review_plan": 0}
+    latest: dict[str, str] = {}
 
     def spawn(
         agent: str,
@@ -241,10 +375,27 @@ def test_plan_gate_revise_then_verify_passes(repo_dir: Path) -> None:
             text = "BLOCK: weak" if calls["review_plan"] == 1 else "PASS: fixed"
         else:
             text = _GREEN.get(agent, "DONE: ok")
+        latest[agent] = text
         _write_artifact_for(repo_dir, prompt, text)
         return json.dumps({"type": "text", "text": text})
 
-    deps = PipelineDeps(
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        text = latest[agent]
+        _write_projection_for(agent, prompt, text)
+        return json.dumps({"type": "text", "text": text})
+
+    spawn.repair_session = repair  # type: ignore[attr-defined]
+    deps = _with_repair(
         loader=FakeLoader(),
         spawn=spawn,
         git=_git_with_ticket(),
@@ -264,9 +415,10 @@ def test_build_test_fail_blocks(repo_dir: Path) -> None:
         'step         = "build_test"\ngates        = true\nretry_budget = 0',
     )
     config_file.write_text(text, encoding="utf-8")
-    deps = PipelineDeps(
+    spawn = _spawn_returning(repo_dir, _GREEN)
+    deps = _with_repair(
         loader=FakeLoader(),
-        spawn=_spawn_returning(repo_dir, _GREEN),
+        spawn=spawn,
         git=_git_with_ticket(),
         build_test=lambda _c, _selection: (False, "2 failed"),
     )
@@ -276,9 +428,10 @@ def test_build_test_fail_blocks(repo_dir: Path) -> None:
 
 
 def test_needs_decision_halts(repo_dir: Path) -> None:
-    deps = PipelineDeps(
+    spawn = _spawn_returning(repo_dir, {"plan": "FAILED: needs decision — which db?"})
+    deps = _with_repair(
         loader=FakeLoader(),
-        spawn=_spawn_returning(repo_dir, {"plan": "FAILED: needs decision — which db?"}),
+        spawn=spawn,
         git=_git_with_ticket(),
     )
     final = run_pipeline(1, directory=str(repo_dir), deps=deps)
@@ -286,8 +439,9 @@ def test_needs_decision_halts(repo_dir: Path) -> None:
 
 
 def test_should_stop_halts(repo_dir: Path) -> None:
-    deps = PipelineDeps(
-        loader=FakeLoader(), spawn=_spawn_returning(repo_dir, {}), git=_git_with_ticket()
+    spawn = _spawn_returning(repo_dir, {})
+    deps = _with_repair(
+        loader=FakeLoader(), spawn=spawn, git=_git_with_ticket()
     )
     final = run_pipeline(1, directory=str(repo_dir), deps=deps, should_stop=lambda: True)
     assert final["type"] == events.RUN_HALTED
@@ -300,12 +454,11 @@ def test_driver_only_reads_the_ticket(repo_dir: Path) -> None:
     """The driver's sole git/gh call is `gh issue view`. Branch, commit, push, and PR are performed
     by the branch/commit *agent* phases (here the spawn is faked, so no git runs), never the driver.
     """
-    runner = RecordingRunner(
-        returns={"issue view": json.dumps({"title": "Add the thing", "body": "do it"})}
-    )
-    deps = PipelineDeps(
+    runner = RecordingRunner(returns=_git_responses("Add the thing", "do it"))
+    spawn = _spawn_returning(repo_dir, _GREEN)
+    deps = _with_repair(
         loader=FakeLoader(),
-        spawn=_spawn_returning(repo_dir, _GREEN),
+        spawn=spawn,
         git=GitOps(run=runner),
         build_test=lambda _c, _selection: (True, ""),
     )

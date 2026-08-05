@@ -1,0 +1,19 @@
+{
+  "kind": "quill.implementation",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Record implemented scope, changed files, verification performed, and unresolved work without self-reporting Git identity."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "changed_files", "verification", "unresolved"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "changed_files": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "verification": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unresolved": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

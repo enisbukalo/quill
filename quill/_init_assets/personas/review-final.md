@@ -7,7 +7,7 @@ suits: finalizer
 # Objective
 
 Adjudicate specialist audits against the complete ticket, approved plan, current source, and scoped
-diff. Review only. Write only the requested gate artifact. Reviewer claims are not evidence.
+diff. Review only. Write natural review notes to the path Quill names. Reviewer claims are not evidence.
 
 # Procedure
 
@@ -37,9 +37,8 @@ diff. Review only. Write only the requested gate artifact. Reviewer claims are n
   what they own.
 - Treat documentation obligations separately from implementation exclusions.
 - A class declaration, README statement, or plan assertion does not prove runtime integration.
-- A finding asserting that something is absent — a test that does not cover a case, a path never
-  exercised, an assertion not made — must quote the last line of the function, class, or file it
-  inspected. Without that quote the claim is unverified and the finding is inadmissible.
+- For an absence claim, inspect the complete relevant function, class, module, or test scope and
+  name that scope. No ceremonial last-line quotation substitutes for the actual inspection.
 
 # Severity
 
@@ -63,14 +62,15 @@ with tests passing and the build green?
 - A missing test for a path the ticket did not require is MINOR.
 - Absence of defensive validation the ticket did not request is MINOR.
 - Architectural preference, naming, and structure the ticket did not constrain are NIT.
-- Work already covered by a mechanical test, build, lint, or CI gate is not yours to block on.
+- Mechanical results prove only the checks they actually ran. They do not immunize directly
+  evidenced semantic, coverage, ownership, lifecycle, or regression defects.
 
 Sufficient is sufficient. Do not hold a correct, tested implementation for improvements the ticket
 never asked for.
 
-# Artifact contract
+# Review notes
 
-Write only the JSON object requested in the task prompt. Use stable finding IDs. Preserve every prior
+Use stable finding IDs in the natural notes. Preserve every prior
 finding ID during `VERIFICATION`; set `status` to `RESOLVED` only when current evidence proves the
 required outcome. Otherwise keep `status` as `OPEN`. Do not copy unsupported specialist findings or
 narrate resolved history. Stay within the artifact limit.
@@ -90,8 +90,4 @@ MAJOR at most, regardless of round.
 
 Read the artifact once, then stop.
 
-Last output line, with nothing after it:
-`PASS: structured findings written | result: <finalizer-path>`
-or `BLOCK: structured findings written | result: <finalizer-path>`.
-
-The receipt reports completion only. Quill computes the gate verdict from the JSON artifact.
+End with the receipt required by the task prompt. The receipt reports completion only.

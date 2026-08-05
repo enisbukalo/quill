@@ -1,0 +1,21 @@
+{
+  "kind": "quill.research.architecture",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Describe verified existing seams, proposed seams, conflicts, unknowns, and downstream obligations."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "existing_seams", "proposed_seams", "evidence", "unknowns", "obligations"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "existing_seams": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "proposed_seams": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "evidence": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unknowns": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "obligations": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

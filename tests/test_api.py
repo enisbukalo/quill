@@ -58,6 +58,7 @@ type = "producer"
 persona = "plan.md"
 model = "m"
 artifact = "plan.md"
+produces_contract = "quill.plan/v1"
 """
 
 
@@ -474,8 +475,9 @@ def test_failed_run_can_restart_from_recorded_phase(
                 ),
                 json.dumps(
                     {
-                        "type": "run_plan",
-                        "ts": 1.0,
+                            "type": "run_plan",
+                            "ts": 1.0,
+                            "phase_set_hash": "test-phase-set",
                         "phase_graph": {
                             "nodes": [
                                 {
@@ -737,6 +739,7 @@ persona = "plan.md"
 model = "qwen"
 artifact = "requirements.md"
 parallel_group = "research"
+produces_contract = "quill.research.requirements/v1"
 
 [[workflows.ticket.phase]]
 id = "technical"
@@ -745,6 +748,7 @@ persona = "plan.md"
 model = "qwen"
 artifact = "technical.md"
 parallel_group = "research"
+produces_contract = "quill.research.technical/v1"
 """
     encoded = base64.b64encode(config.encode()).decode()
     services.settings.personas_root.mkdir(parents=True, exist_ok=True)

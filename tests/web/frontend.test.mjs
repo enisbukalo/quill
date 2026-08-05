@@ -37,6 +37,7 @@ import {
 } from "../../quill_api/web/format.mjs";
 import {
   centeredPhaseScroll,
+  contractEdgeLabel,
   concurrencyGroups,
   formatPhaseDuration,
   groupBoxes,
@@ -44,6 +45,7 @@ import {
   laneDisplayId,
   layoutPhaseGraph,
   nodeTextRows,
+  normalizeContractState,
   normalizePhaseGraph,
   orthogonalPath,
   phaseEdgeState,
@@ -55,6 +57,38 @@ import {
   retryLaneY,
   selfLoopLayout,
 } from "../../quill_api/web/phase-graph.mjs";
+
+test("phase graph preserves contract edges and latest validated attempt status", () => {
+  const run = {
+    phase_graph: {
+      nodes: [
+        { id: "research", label: "Research", order: 0 },
+        { id: "plan", label: "Plan", order: 1 },
+      ],
+      edges: [{
+        key: "research->plan",
+        source: "research",
+        target: "plan",
+        kinds: ["normal"],
+        contracts: ["quill.research.requirements/v1"],
+      }],
+    },
+    contract_states: {
+      research: { attempt: 2, state: "published", status: "COMPLETE", digest: "abc" },
+    },
+  };
+  const graph = normalizePhaseGraph(run);
+  assert.deepEqual(graph.edges[0].contracts, ["quill.research.requirements/v1"]);
+  assert.deepEqual(graph.nodes[0].contractState, {
+    attempt: 2,
+    state: "published",
+    kind: "",
+    status: "COMPLETE",
+    digest: "abc",
+  });
+  assert.equal(contractEdgeLabel(graph.edges[0].contracts), "requirements/v1");
+  assert.equal(normalizeContractState({ attempt: 0, state: "published" }), null);
+});
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
 import { linearTrend, sparklineLeftMargin } from "../../quill_api/web/trends.mjs";
 

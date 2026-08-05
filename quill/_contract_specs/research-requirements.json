@@ -1,0 +1,20 @@
+{
+  "kind": "quill.research.requirements",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["State ticket requirements, evidence, unknowns, and downstream obligations without inventing decisions."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "requirements", "evidence", "unknowns", "obligations"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "requirements": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "evidence": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unknowns": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "obligations": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

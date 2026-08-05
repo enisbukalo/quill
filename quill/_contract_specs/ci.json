@@ -1,0 +1,24 @@
+{
+  "kind": "quill.ci",
+  "version": 1,
+  "phase_types": ["mechanical"],
+  "steps": ["ci_check"],
+  "allowed_statuses": ["COMPLETE", "UNAVAILABLE"],
+  "semantic_obligations": [],
+  "payload": {"type": "object", "required": ["pr", "head_sha", "link_action", "checks"], "additional_properties": false, "properties": {
+    "pr": {"type": "integer"},
+    "head_sha": {"type": "string"},
+    "link_action": {"type": "string", "min_length": 1},
+    "captured_at": {"type": "string", "min_length": 1},
+    "checks": {"type": "array", "items": {"type": "object", "required": ["name", "state", "status", "conclusion", "url", "run_id"], "additional_properties": false, "properties": {
+      "name": {"type": "string", "min_length": 1},
+      "state": {"type": "string", "min_length": 1},
+      "status": {"type": "string"},
+      "conclusion": {"type": "string"},
+      "url": {"type": "string"},
+      "run_id": {"type": "string"},
+      "failure_log": {"type": "string", "min_length": 1},
+      "failure_log_sha256": {"type": "string", "min_length": 64}
+    }}}
+  }}
+}

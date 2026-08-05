@@ -24,7 +24,7 @@ from quill.mechanical import (
     step_pr_head_guard,
 )
 from quill.phases import Outcome, PhaseResult
-from quill.runctx import BuildTest, PipelineDeps, RunContext
+from quill.runctx import BuildTest, PipelineDeps, RunContext, VerificationResult
 
 
 class _FakeRunner:
@@ -319,12 +319,28 @@ def test_registry_matches_the_configs_allowed_steps() -> None:
 # -- build_test -------------------------------------------------------------------
 
 
-def test_build_test_no_runner_passes(tmp_path: Path) -> None:
+def test_build_test_no_runner_is_unavailable(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, _deps(build_test=None))
     result = step_build_test(
         ctx, PhaseDef(id="bt", type="mechanical", step="build_test"), spawn=_noop_spawn
     )
-    assert result.outcome is Outcome.PASS
+    assert result.outcome is Outcome.FAILED
+    assert ctx.mechanical_evidence["bt"].status.value == "UNAVAILABLE"
+
+
+def test_build_test_rejects_malformed_typed_runner_result_as_unavailable(tmp_path: Path) -> None:
+    ctx = _ctx(
+        tmp_path,
+        _deps(build_test=lambda _config, _selection: VerificationResult("test", ())),
+    )
+    result = step_build_test(
+        ctx,
+        PhaseDef(id="bt", type="mechanical", step="build_test"),
+        spawn=_noop_spawn,
+    )
+    assert result.outcome is Outcome.FAILED
+    assert "could not persist build/test evidence" in result.message
+    assert ctx.mechanical_evidence["bt"].status.value == "UNAVAILABLE"
 
 
 def test_build_test_ok_passes(tmp_path: Path) -> None:
@@ -341,7 +357,7 @@ def test_build_test_failure_blocks(tmp_path: Path) -> None:
         ctx, PhaseDef(id="bt", type="mechanical", step="build_test"), spawn=_noop_spawn
     )
     assert result.outcome is Outcome.BLOCK
-    assert result.message == "boom"
+    assert "boom" in result.message
 
 
 def test_build_test_runner_writes_log(tmp_path: Path) -> None:
@@ -673,7 +689,7 @@ def test_ci_check_resolves_and_caches_the_pr_in_create_mode(tmp_path: Path) -> N
     assert ctx.branch == "ticket-33-fix"
 
 
-def test_ci_check_skipped_without_a_gh_reader(tmp_path: Path) -> None:
+def test_ci_check_without_a_gh_reader_is_unavailable(tmp_path: Path) -> None:
     result = step_ci_check(_ctx(tmp_path, _deps()), _ci_phase(), spawn=_noop_spawn)
-    assert result.outcome is Outcome.PASS
-    assert "skipped" in result.message
+    assert result.outcome is Outcome.FAILED
+    assert "unavailable" in result.message

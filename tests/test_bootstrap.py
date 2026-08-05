@@ -95,23 +95,21 @@ def test_load_before_init_raises_missing(tmp_path: Path) -> None:
         load_config(tmp_path)
 
 
-def test_default_config_loads_after_filling_required_fields(tmp_path: Path) -> None:
-    """The shipped default loads once its required build and runner fields are set."""
+def test_default_config_loads_after_filling_required_build_fields(tmp_path: Path) -> None:
+    """The shipped Pi default loads once its required build fields are set."""
     config_file = init_config(tmp_path)
     personas_root, _ = seed_personas(tmp_path / "personas")
     text = config_file.read_text(encoding="utf-8")
-    text = text.replace('kind = ""', 'kind = "opencode"')
     text = text.replace('command = ""', 'command = "make"')
     text = text.replace('test    = ""', 'test    = "make test"')
     config_file.write_text(text, encoding="utf-8")
 
     config = load_config(tmp_path, personas_root=personas_root, runs_root=tmp_path / "runs")
-    assert config.runner == "opencode"
+    assert config.runner == "pi"
     assert config.phase_ids == [
         "research_requirements",
         "research_architecture",
         "research_technical",
-        "research_synthesis",
         "research_gate",
         "plan",
         "review_plan",
@@ -124,7 +122,19 @@ def test_default_config_loads_after_filling_required_fields(tmp_path: Path) -> N
         "commit",
     ]
     plan = config.phase("plan")
-    assert plan is not None and plan.inputs == ("research_synthesis",)
+    assert plan is not None
+    assert plan.inputs == (
+        "research_requirements",
+        "research_architecture",
+        "research_technical",
+    )
+    assert plan.requires == ("research_gate",)
+    assert all(phase.produces_contract for phase in config.phases)
+    assert all(
+        phase.self_check
+        for phase in config.phases
+        if phase.type != "mechanical" and phase.produces_contract
+    )
     # The default implementation review fans out to three concurrent lanes.
     review = config.phase("review_impl")
     assert review is not None and len(review.audits) == 3 and review.structured_findings

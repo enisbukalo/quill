@@ -272,6 +272,7 @@ class PhaseGraphEdge(BaseModel):
     source: str
     target: str
     kinds: list[Literal["normal", "retry"]]
+    contracts: list[str] = Field(default_factory=list)
 
 
 class PhaseGraph(BaseModel):
@@ -310,6 +311,7 @@ class RunSummary(BaseModel):
     active_phases: dict[str, float] = Field(default_factory=dict)
     self_checks: dict[str, str] = Field(default_factory=dict)
     self_fixes: dict[str, str] = Field(default_factory=dict)
+    contract_states: dict[str, dict[str, object]] = Field(default_factory=dict)
     activity: str | None = None
     activity_label: str | None = None
     attempt: int = 0
@@ -342,6 +344,10 @@ class PhaseHistoryEntry(BaseModel):
     duration_s: float | None = None
     tools: dict[str, int] = {}
     reason: str | None = None
+    contract_kind: str | None = None
+    contract_version: int | None = None
+    contract_status: str | None = None
+    contract_digest: str | None = None
 
 
 class RunDetail(RunSummary):

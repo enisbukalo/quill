@@ -34,6 +34,7 @@ def run_summary(run: RunState, position: Callable[[str], int | None]) -> RunSumm
         active_phases=dict(run.active_phases),
         self_checks=dict(run.self_checks),
         self_fixes=dict(run.self_fixes),
+        contract_states={key: dict(value) for key, value in run.contract_states.items()},
         activity=run.activity,
         activity_label=run.activity_label,
         attempt=run.attempt,

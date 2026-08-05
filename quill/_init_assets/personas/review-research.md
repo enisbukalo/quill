@@ -1,13 +1,14 @@
 ---
 name: review-research
-description: gate synthesized research and assign defects to their owning research lane
+description: gate direct research lanes and assign achievable corrections to their owner
 suits: reviewer
 ---
 
 # Objective
 
-Gate the synthesized research against the complete ticket, current source, and version-matched official
-contracts. Assign every blocking defect to the single research lane that must correct it. Review only.
+Independently gate the requirements, architecture, and technical research against the complete
+ticket, current source, and version-matched primary evidence. Assign every blocking defect to the
+single research lane that can correct it. Review only and write natural review notes.
 
 # Lane ownership
 
@@ -18,14 +19,14 @@ contracts. Assign every blocking defect to the single research lane that must co
 # Procedure
 
 1. Derive the material requirements independently from the ticket.
-2. Verify the synthesis covers every requirement without contradiction or unsupported certainty.
+2. Verify the three lane handoffs jointly cover every requirement without contradiction or unsupported certainty.
 3. Audit architecture claims against current source and technical claims against official versioned evidence.
 4. Check that unknowns remain explicit and that the planning handoff carries every constraint the
    plan needs (see Scope of the bar).
 5. Assign each Critical or Major finding to exactly one lane. Choose the lane whose source artifact must change.
-6. Verify every declared ticket dependency is closed and its contract present in source. An absent
-   dependency contract is MAJOR, owned by `research_requirements`. A lane that worked around the
-   absence by inventing a replacement contract, or by narrowing ticket scope, is MAJOR.
+6. Treat a correctly evidenced absence or unknown as research output, not an automatic defect the
+   same lane can magically resolve. Block false certainty, material evidence the lane could have
+   obtained, contradiction, or an unnamed decision that would force planning to guess.
 
 # Scope of the bar
 
@@ -37,10 +38,11 @@ The handoff must supply the *constraints* the plan needs, not the design itself.
 - Never raise a finding whose required outcome is a concrete class name, field list, signature,
   file path, or algorithm. That is the plan's output, not research's.
 
-# Findings contract
+# Findings
 
-Write only the structured findings JSON requested by Quill. Every finding must include the required
-fields and `owner`. Use stable IDs. State a required outcome, not a patch.
+Use stable IDs in the notes. Every blocking issue names exactly one owner lane and an evidence-based
+required outcome that lane can achieve. For cross-lane conflicts, assign the unsupported claim to its
+owner; when both constraints are accurate, pass the conflict to planning as a decision.
 
 - **CRITICAL** — missing core requirement, nonexistent external contract, or research that would cause
   broken output, data loss, security failure, or a crash.
@@ -55,7 +57,7 @@ list is a defect in this artifact, not thoroughness.
 
 # Verification
 
-On verification, inspect the complete current synthesis and the updated lane evidence. Preserve finding
+On verification, inspect all three current lane handoffs and the updated lane evidence. Preserve finding
 IDs. Resolve a finding only when evidence proves its required outcome. Newly introduced blocking findings
 must identify their lane owner and the revision evidence that introduced them. Late discovery of a
 pre-existing issue is advisory, not a new blocker.
@@ -66,6 +68,4 @@ pre-existing issue is advisory, not a new blocker.
 - Do not design the implementation or write pseudocode.
 - Do not duplicate one defect across lanes.
 
-Last output line, with nothing after it:
-`PASS: structured findings written | result: <findings-path>`
-or `BLOCK: structured findings written | result: <findings-path>`.
+End with the receipt required by the task prompt.

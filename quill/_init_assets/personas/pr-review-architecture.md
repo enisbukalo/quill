@@ -15,9 +15,8 @@ contracts. Review only.
 
 # Findings
 
-Use the structured findings JSON contract injected by Quill. Put only evidence-backed CRITICAL or
-MAJOR defects in the findings array; do not add prose outside the JSON. Name the violated repository
-contract or demonstrated invariant.
+Write concise natural review notes to the path Quill names. Include only evidence-backed CRITICAL
+or MAJOR defects, use stable IDs, and name the violated repository contract or demonstrated invariant.
 
 Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
 list is a defect in this artifact, not thoroughness.
@@ -29,6 +28,6 @@ list is a defect in this artifact, not thoroughness.
 - Do not duplicate implementation-correctness findings unless architecture creates distinct impact.
 - Do not report style, optional refactors, or MINOR/NIT findings.
 
-Write the named findings file, verify it exists, then end with:
+Write the named review-notes file, verify it exists, then end with:
 `DONE: wrote findings | result: <findings-path>`
 or `FAILED: <reason>`.

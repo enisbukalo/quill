@@ -16,7 +16,7 @@ gates, retries, recovery, and durable state.
 A typical ticket graph looks like this:
 
 ```
-workspace prep → concurrent research → synthesis/gate → plan/gate → implement
+workspace prep → concurrent research/gate → plan/gate → implement
                → test/build → concurrent implementation audits/gate → commit/push/PR
 ```
 
@@ -138,6 +138,10 @@ uv sync --extra dev --extra api --extra mcp # dev environment for the test suite
 uv run pytest                          # run the tests
 ```
 
+The automated suite is pytest with temporary directories and deterministic fake Pi, Git, and
+build runners. It does not start vLLM or spend model tokens. A live-model smoke run is a separate,
+optional operational check; it is not part of pytest and should use a disposable ticket.
+
 Check what your `quill` is actually wired to at any time:
 
 ```bash
@@ -224,10 +228,26 @@ final_round         = ["CRITICAL", "MAJOR"]  # last round the budget allows
 enabled = false           # opt in to repository-scoped, verified blocker memory
 
 [timeouts]
+opencode_run_seconds = 5400 # full phase and same-session continuation hang guard
 model_load_seconds = 360  # wait up to six minutes for a model service switch
 ```
 
-For malformed model output, Quill first sends the validation problem and expected contract back to
+Every configured phase publishes an exact versioned contract. An LLM phase first completes its
+natural work artifact without seeing the contract schema, then performs its phase-specific
+same-session self-check. Quill freezes that checked artifact and repository identity before sending
+one final serialization-only continuation. Only that late projection sees the payload shape. Quill
+validates it, binds immutable evidence hashes and exact upstream contract attempts, and atomically
+publishes `contracts/<phase>/attempt-N.json` plus a latest pointer. Projection may never edit the
+frozen artifact or repository.
+
+Contracts carry kind/version, `COMPLETE`/`INCOMPLETE`/`PARTIAL`/`UNAVAILABLE` status, phase and run
+identity, spec digest, artifact hashes, Git/worktree identity, exact upstream refs, payload, and a
+canonical envelope digest. Downstream phases accept exact versions and require `COMPLETE` inputs.
+`INCOMPLETE` records a concrete semantic omission and starts a fresh schema-blind phase attempt; it
+is never published as a successful handoff. Mechanical contracts are built by Python from observed
+commands, exit codes, GitHub checks, SHAs, and hashed logs rather than model claims.
+
+For malformed projection output, Quill sends only the structural validation problem back to
 the same Pi session. If that bounded self-fix still returns `GARBAGE`, Quill starts a fresh phase
 session up to `[retries].spawn` times. Explicit `FAILED:` and `BLOCK:` verdicts remain authoritative;
 they are not treated as formatting failures. A nested retry phase consumes its own spawn budget, so
@@ -253,10 +273,10 @@ graphs. Four phase types are available:
 
 | Type | What it does | Key fields |
 |---|---|---|
-| `producer` | LLM writes an artifact; consecutive same-model producers can run concurrently | `persona`, `model`, `artifact`; optional `inputs`, `parallel_group`, `synthesizes` |
-| `reviewer` | LLM judges artifacts; `models=[...]` fans out sequentially, or vLLM `[[phase.audits]]` runs named same-model lanes concurrently | `persona` + `models`, or `audits`; `against`, `gates` |
-| `finalizer` | LLM reconciles N reviewers' findings, applies gate | `persona`, `model`, `reconciles`, `gates` |
-| `mechanical` | Built-in non-LLM step (currently only `build_test`) | `step` |
+| `producer` | LLM writes an artifact; consecutive same-model producers can run concurrently | `persona`, `model`, `artifact`, `produces_contract`; optional `inputs`, `requires`, `parallel_group`, `synthesizes` |
+| `reviewer` | LLM judges artifacts; `models=[...]` fans out sequentially, or vLLM `[[phase.audits]]` runs named same-model lanes concurrently | `persona` + `models`, or `audits`; `against`, `gates`, contract fields |
+| `finalizer` | LLM reconciles N reviewers' findings, applies gate | `persona`, `model`, `reconciles`, `gates`, contract fields |
+| `mechanical` | Python records typed observed evidence without a model | `step`, contract fields |
 
 When a gating phase `BLOCK`s, `on_block` sends execution back to one earlier phase and normal
 phase traversal resumes from there, up to `retry_budget` times. Each reviewer's findings use
@@ -300,21 +320,23 @@ and phase-history events. Quill preserves a canonical latest artifact plus immut
 snapshots in `parallel-<group>-manifest.json`. A serial producer with `synthesizes = [...]` rebuilds
 one handoff from the latest lane artifacts.
 
-A structured gate can combine `selective_on_block = [lane ids]` with `on_block = "synthesis"`.
+A selective gate has two supported forms. Direct mode sets `selective_on_block = [lane ids]`, names
+every lane in `against`, and omits `on_block`; after selected lanes rerun, the gate re-reviews all
+latest lane contracts. Synthesis compatibility mode combines the same selective list with
+`on_block = "synthesis"`; selected lanes rerun, the serial synthesis rebuilds from every latest
+lane, and then the gate verifies.
+
 Every open Critical/Major finding must name one allowed `owner`; Quill reruns only the lanes that own
-blockers, runs those selected lanes concurrently when capacity permits, rebuilds the synthesis from
-all current lane artifacts, and verifies the gate. Configuration validation requires the selective
-list and synthesis to cover every lane exactly once. On verification, a new blocker can extend the
+blockers and runs those selected lanes concurrently when capacity permits. Configuration validation
+requires the selective list to cover one complete parallel group exactly once. On verification, a new blocker can extend the
 retry loop only when `introduced_by_revision` identifies the revision that caused it; a late discovery
 of an older issue remains advisory.
 
-Set `structured_findings = true` on a gated LLM reviewer or finalizer to make the artifact—not the
-model's receipt—the verdict authority. The reviewer writes schema-versioned JSON with stable finding
-IDs, severities, evidence, required outcomes, and `OPEN`/`RESOLVED` status. Quill rejects malformed
-artifacts, blocks on every open CRITICAL/MAJOR finding, and requires every prior blocker ID to remain
-present during verification. A contradictory `PASS:` receipt cannot advance the workflow. If Pi
-writes malformed findings JSON, Quill gives that same session one bounded correction prompt before
-failing the phase.
+Set `structured_findings = true` on a gated LLM reviewer or finalizer to make the validated late
+projection—not the model's receipt—the verdict authority. The reviewer writes and self-checks natural
+notes; only the final continuation projects stable IDs, severities, evidence, required outcomes, and
+status. Quill blocks on every open CRITICAL/MAJOR finding and requires prior blocker identities to
+survive verification. A contradictory `PASS:` receipt cannot advance the workflow.
 
 When `[memory] enabled = true`, Quill mechanically archives each gate's compact BLOCK receipt in
 `~/.quill/memory/<owner>/<repo>/blockers.jsonl`. A finding becomes reusable only after the existing
@@ -349,13 +371,18 @@ the safety boundaries.
 **no shipped configuration sets it**. A cap costs twice over: an oversized artifact spends a
 same-session compaction turn before it is revalidated, and — more insidiously — models write up to
 whatever ceiling they are given, cutting real detail from the handoff to stay under it. Set one only
-if a downstream consumer genuinely cannot take the size. Quill never silently truncates. Producer `inputs = ["research_synthesis", "plan"]` names the exact earlier artifacts the task must read,
+if a downstream consumer genuinely cannot take the size. Quill never silently truncates. Producer
+`inputs = ["research_requirements", "research_architecture", "research_technical"]` names the
+exact earlier artifacts the task must read,
 preventing broad run-directory archaeology and accidental context growth.
 
-For Pi phases, `self_check = true` adds one completion audit after the first valid `DONE` or `PASS`.
-Quill reopens the exact Pi conversation, asks the worker to verify its phase contract, required skills,
-accuracy, unsupported claims, and obvious omissions, then validates the artifact and receipt again.
-The check never runs after `FAILED` or `BLOCK`, and mechanical or non-Pi phases cannot enable it.
+For Pi phases, `self_check = true` or a named self-check persona adds one completion audit after the
+natural task succeeds and before projection. Shipped workflows enable it on every consumed LLM phase.
+Quill reopens the exact Pi conversation and asks the worker to verify its natural phase work,
+required skills, accuracy, unsupported claims, and obvious omissions, then validates the artifact
+and receipt again.
+The self-check sees no schema and cannot broaden the original phase's mutation authority. Mechanical
+phases do not use a model. The configured 5,400-second continuation timeout is unchanged.
 
 When a Pi worker omits its final receipt or writes an invalid one, Quill continues that exact session
 once. The recovery prompt requires the model to inspect its work and continue if incomplete; an
@@ -380,7 +407,7 @@ the defaults below:
 | `research-architecture.md` | Trace ownership, dependencies, state flow, and lifecycle constraints |
 | `research-technical.md` | Verify versioned external contracts and executable validation seams |
 | `research-synthesis.md` | Reconcile the current research lanes into one planning handoff |
-| `review-research.md` | Gate synthesized research and assign defects to their owning lane |
+| `review-research.md` | Gate the direct research lanes and assign defects to their owning lane |
 | `plan.md` | Write an implementation plan with phased, self-contained steps |
 | `review-plan.md` | Judge the plan — severity-tagged findings, gate on CRITICAL/MAJOR |
 | `impl.md` | Apply a complete change from the plan, never build/test |
@@ -524,9 +551,12 @@ after any PR has used the branch or when the run was merged, diverged, or lost i
 Before every phase invocation, including loop re-entry, Quill commits a local-only checkpoint and
 records its SHA and capture time. Every safely matched execution in the run's phase-history table
 has its own confirmed **Apply** action; concurrent audit rows re-enter their configured parent
-phase. A restart restores that boundary and carries the source run's completed phase rows, graph
-routes, timings, usage, tool calls, self-check state, model-load records, handoff artifacts, and
-matching transcripts into the linked run. It also inherits the source run's effective per-phase
+phase. A restart restores that boundary and computes the chosen phase's transitive upstream contract
+closure. It revalidates the phase-set/spec/envelope digests, exact attempts, source run and checkpoint
+identity, and every bound artifact hash, then copies only that immutable closure plus allowlisted
+matching transcripts. A partial, stale, or unrelated closure is rejected. Completed phase rows,
+graph routes, timings, usage, tool calls, and self-check/model-load state remain visible as inherited
+history. The linked run also inherits the source run's effective per-phase
 model overrides instead of reverting to current config defaults. New execution is appended to that
 lineage, and inherited transcripts are never overwritten. Historical attempts without a provable
 checkpoint association remain visible but are not offered as restart boundaries. The current
@@ -622,11 +652,11 @@ the run. `pr-feedback.json` and `.md` preserve the exact input and boundary for 
 
 ### Run artifacts
 
-Each run's artifacts, findings, logs, and state land in `~/.quill/runs/<timestamp>-ticketN/` —
+Each run's artifacts, findings, logs, contracts, and state land in `~/.quill/runs/<timestamp>-ticketN/` —
 one folder per run, never clobbering each other; prune them yourself. Every run unloads all
 models on exit. `state.jsonl` is the authoritative ordered workflow history; `stream-*.jsonl`
 files contain per-agent usage and tool telemetry, with a unique file for every invocation.
-The dashboard lists every artifact in a table with its size and a direct download action. It does
+The dashboard lists top-level and nested immutable artifacts with relative paths, size, and a direct download action. It does
 not render or copy artifact contents. **Download all** streams a ZIP containing the run's files;
 archives spill to a temporary file after 8 MiB instead of retaining the complete ZIP in API memory.
 

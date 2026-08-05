@@ -25,7 +25,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from quill.contracts import ContractRef
 
 from quill.live_usage import LiveUsage
 
@@ -62,6 +65,8 @@ class PhaseResult:
     #: A configured phase consumes this permission after exhausting its fresh-spawn budget. This
     #: prevents a parent gate from retrying itself because a nested repair phase already failed.
     allow_phase_retry: bool = True
+    #: Validated durable handoff published by this exact phase attempt.
+    contract_ref: ContractRef | None = None
 
     @property
     def is_pass(self) -> bool:

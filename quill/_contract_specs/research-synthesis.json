@@ -1,0 +1,21 @@
+{
+  "kind": "quill.research.synthesis",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Reconcile all lane findings without resolving unsupported conflicts or dropping unknowns."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "decisions", "conflicts", "evidence", "unknowns", "obligations"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "decisions": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "conflicts": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "evidence": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unknowns": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "obligations": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

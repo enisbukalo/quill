@@ -68,6 +68,7 @@ export function normalizePhaseGraph(run) {
       durationSeconds: Number.isFinite(Number(run.phase_durations?.[node.id]))
         ? Math.ceil(Math.max(0, Number(run.phase_durations[node.id])))
         : null,
+      contractState: normalizeContractState(run.contract_states?.[node.id]),
     }))
     .sort((left, right) => left.order - right.order);
   const dottedGroups = new Map();
@@ -112,6 +113,9 @@ export function normalizePhaseGraph(run) {
       source: edge.source,
       target: edge.target,
       kinds: Array.isArray(edge.kinds) ? edge.kinds.filter((kind) => ["normal", "retry"].includes(kind)) : [],
+      contracts: Array.isArray(edge.contracts)
+        ? edge.contracts.filter((contract) => typeof contract === "string" && contract.length > 0)
+        : [],
       count: Math.max(0, Number(run.phase_route_counts?.[key]) || 0),
     });
   }
@@ -121,9 +125,31 @@ export function normalizePhaseGraph(run) {
   };
 }
 
+export function normalizeContractState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const attempt = Number(value.attempt);
+  const state = typeof value.state === "string" ? value.state : "";
+  if (!Number.isInteger(attempt) || attempt < 1 || !state) return null;
+  return {
+    attempt,
+    state,
+    kind: typeof value.kind === "string" ? value.kind : "",
+    status: typeof value.status === "string" ? value.status : "",
+    digest: typeof value.digest === "string" ? value.digest : "",
+  };
+}
+
+export function contractEdgeLabel(contracts = []) {
+  return contracts.map((contract) => {
+    const [kind, version = ""] = String(contract).split("/");
+    return `${kind.split(".").at(-1) || kind}${version ? `/${version}` : ""}`;
+  }).join(", ");
+}
+
 /** Identify graph changes that require new geometry.
  *
- * Runtime state, traversal counts, durations, and token totals intentionally do not participate.
+ * Traversal counts, durations, and token totals intentionally do not participate. Contract attempt
+ * and state do because they control a visible node badge that must repaint on lifecycle changes.
  * A retry route becoming visible does participate because zero-count retry routes are not drawn.
  */
 export function phaseGraphStructureSignature(graph) {
@@ -139,10 +165,12 @@ export function phaseGraphStructureSignature(graph) {
       node.modelName || "",
       Boolean(node.selfCheck),
       Boolean(node.selfFixRan),
+      node.contractState?.attempt || 0,
+      node.contractState?.state || "",
     ]),
     edges: (graph.edges || [])
       .filter((edge) => edge.count > 0 || edge.kinds.includes("normal"))
-      .map((edge) => [edge.key, edge.source, edge.target, [...edge.kinds].sort()]),
+      .map((edge) => [edge.key, edge.source, edge.target, [...edge.kinds].sort(), edge.contracts]),
     groups: (graph.groups || []).map((group) => [group.id, group.label, [...group.members]]),
   });
 }

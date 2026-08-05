@@ -1,0 +1,9 @@
+{
+  "kind": "quill.pr-evidence",
+  "version": 1,
+  "phase_types": ["mechanical"],
+  "steps": ["collect_pr_evidence"],
+  "allowed_statuses": ["COMPLETE", "UNAVAILABLE"],
+  "semantic_obligations": [],
+  "payload": {"type": "object", "required": ["results"], "additional_properties": false, "properties": {"results": {"type": "array", "items": {"type": "object", "properties": {}, "additional_properties": true}}}}
+}

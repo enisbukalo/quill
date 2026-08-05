@@ -26,13 +26,15 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from quill.config import PhaseDef, QuillfolioConfig
 from quill.git_ops import ChecksStatus, GitError, GitOps
 from quill.phases import Outcome, PhaseResult
-from quill.runctx import RunContext
+from quill.contracts import ContractError, ContractStatus, file_sha256, repository_identity
+from quill.runctx import CommandResult, MechanicalEvidence, RunContext, VerificationResult
 
 #: How the engine spawns an LLM phase: (ctx, phase) -> PhaseResult. Unused by build_test, but kept
 #: in the step signature so every mechanical step has a uniform shape.
@@ -48,6 +50,16 @@ PR_REVIEW_MARKER = "<!-- quill-pr-review -->"
 PR_REVIEW_RESULT_MARKER = "quill-pr-review-result:v1"
 
 
+def _record_mechanical(
+    ctx: RunContext,
+    phase: PhaseDef,
+    status: ContractStatus,
+    payload: object,
+    *artifacts: str,
+) -> None:
+    ctx.mechanical_evidence[phase.id] = MechanicalEvidence(status, payload, tuple(artifacts))
+
+
 def step_build_test(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> PhaseResult:
     """Run build then test; PASS/BLOCK so the engine's gate can revise→verify on failure.
 
@@ -56,27 +68,116 @@ def step_build_test(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> P
     blind — the same "pass the findings into the retry" contract the reviewer gates have.
     """
     if ctx.deps.build_test is None:
-        return PhaseResult(Outcome.PASS, "build/test skipped (no runner)")
-    ok, log = ctx.deps.build_test(ctx.config, phase.step or "build_test")
-    if not ok:
-        _write_build_findings(ctx, log)
-    return PhaseResult(Outcome.PASS if ok else Outcome.BLOCK, log)
+        ctx.mechanical_evidence[phase.id] = MechanicalEvidence(
+            ContractStatus.UNAVAILABLE,
+            {"selection": phase.step or "build_test", "commands": []},
+        )
+        return PhaseResult(Outcome.FAILED, "build/test unavailable (no runner configured)")
+    try:
+        observed = _coerce_verification_result(
+            ctx,
+            phase.step or "build_test",
+            ctx.deps.build_test(ctx.config, phase.step or "build_test"),
+        )
+        payload, artifacts = _persist_verification_evidence(ctx, phase, observed)
+        if not observed.ok:
+            _write_build_findings(ctx, observed.combined_log)
+            artifacts = (*artifacts, BUILD_FINDINGS_NAME)
+    except (OSError, TypeError, ValueError, ContractError) as exc:
+        ctx.mechanical_evidence[phase.id] = MechanicalEvidence(
+            ContractStatus.UNAVAILABLE,
+            {"selection": phase.step or "build_test", "commands": []},
+        )
+        return PhaseResult(Outcome.FAILED, f"could not persist build/test evidence: {exc}")
+    ctx.mechanical_evidence[phase.id] = MechanicalEvidence(
+        ContractStatus.COMPLETE,
+        payload,
+        artifacts,
+    )
+    return PhaseResult(
+        Outcome.PASS if observed.ok else Outcome.BLOCK,
+        observed.combined_log,
+    )
 
 
 def _write_build_findings(ctx: RunContext, log: str) -> None:
     """Persist the failing build/test log as the run-dir findings file for the impl revise."""
-    try:
-        path = ctx.run_dir / BUILD_FINDINGS_NAME
-        path.write_text(
-            "# Build / test failure — fix these before the next build\n\n"
-            "The build or test suite failed. Treat every compiler error and failing test below as a "
-            "CRITICAL finding: the code must compile and all tests must pass. Fix the root cause in "
-            "the source; do not delete or weaken tests to make them pass.\n\n"
-            "```\n" + log + "\n```\n",
-            encoding="utf-8",
+    path = ctx.run_dir / BUILD_FINDINGS_NAME
+    path.write_text(
+        "# Build / test failure — fix these before the next build\n\n"
+        "The build or test suite failed. Treat every compiler error and failing test below as a "
+        "CRITICAL finding: the code must compile and all tests must pass. Fix the root cause in "
+        "the source; do not delete or weaken tests to make them pass.\n\n"
+        "```\n" + log + "\n```\n",
+        encoding="utf-8",
+    )
+
+
+def _coerce_verification_result(
+    ctx: RunContext,
+    selection: str,
+    value: VerificationResult | tuple[bool, str],
+) -> VerificationResult:
+    """Temporary adapter for injected legacy fakes; production returns typed observations."""
+    if isinstance(value, VerificationResult):
+        if value.selection != selection:
+            raise ValueError(
+                f"verification runner returned selection {value.selection!r}, expected {selection!r}"
+            )
+        return value
+    ok, log = value
+    now = datetime.now(UTC).isoformat()
+    commands = {
+        "build": (ctx.config.build_command,),
+        "test": (ctx.config.test_command,),
+        "build_test": (ctx.config.build_command, ctx.config.test_command),
+    }[selection]
+    # A flattened legacy fake cannot prove per-command execution. Keep it useful to old callers
+    # without fabricating a successful second command after a failure.
+    observed = commands if ok else commands[:1]
+    return VerificationResult(
+        selection,
+        tuple(
+            CommandResult(command, 0 if ok else 1, False, False, now, now, log)
+            for command in observed
+        ),
+    )
+
+
+def _persist_verification_evidence(
+    ctx: RunContext, phase: PhaseDef, result: VerificationResult
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    rows: list[dict[str, object]] = []
+    artifacts: list[str] = []
+    head, fingerprint = repository_identity(ctx.directory)
+    for index, command in enumerate(result.commands, 1):
+        name = f"{phase.id}-{result.selection}-command-{index}.log"
+        path = ctx.run_dir / name
+        path.write_text(command.output, encoding="utf-8")
+        artifacts.append(name)
+        rows.append(
+            {
+                "command": command.command,
+                # JSON contract uses -1 for "no process exit" (cancel/timeout); the accompanying
+                # booleans retain the exact reason without requiring a union-typed schema.
+                "exit_code": command.exit_code if command.exit_code is not None else -1,
+                "cancelled": command.cancelled,
+                "timed_out": command.timed_out,
+                "started_at": command.started_at,
+                "ended_at": command.ended_at,
+                "log": name,
+                "log_sha256": file_sha256(path),
+            }
         )
-    except OSError:
-        pass  # best-effort; the gate decision already happened, revise just won't have the file
+    payload: dict[str, object] = {
+        "selection": result.selection,
+        "commands": rows,
+    }
+    if head is not None:
+        payload["source_sha"] = head
+    if fingerprint is not None:
+        payload["worktree_fingerprint"] = fingerprint
+    return payload, tuple(artifacts)
 
 
 # -- ci_check ---------------------------------------------------------------------
@@ -107,10 +208,22 @@ def step_ci_check(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> Pha
     """
     git = ctx.deps.git
     if git is None:
-        return PhaseResult(Outcome.PASS, "ci check skipped (no gh reader wired)")
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {"pr": 0, "head_sha": "", "link_action": "unavailable", "checks": []},
+        )
+        return PhaseResult(Outcome.FAILED, "ci check unavailable (no GitHub reader wired)")
 
     pr_number = _resolve_pr_number(ctx)
     if pr_number is None:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {"pr": 0, "head_sha": "", "link_action": "unavailable", "checks": []},
+        )
         return PhaseResult(
             Outcome.FAILED,
             f"no open PR found for ticket {ctx.ticket} — a ci_check phase must run after the "
@@ -120,6 +233,12 @@ def step_ci_check(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> Pha
     try:
         link_action = git.ensure_pr_closes_ticket(pr_number, ctx.ticket)
     except GitError as exc:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {"pr": pr_number, "head_sha": "", "link_action": "failed", "checks": []},
+        )
         return PhaseResult(
             Outcome.FAILED,
             f"could not establish PR #{pr_number} closing link for ticket #{ctx.ticket}: {exc}",
@@ -133,6 +252,12 @@ def step_ci_check(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> Pha
         try:
             status = git.pr_checks(pr_number)
         except GitError as exc:
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {"pr": pr_number, "head_sha": "", "link_action": link_action, "checks": []},
+            )
             return PhaseResult(Outcome.CRASH, f"could not read PR #{pr_number} checks: {exc}")
 
         if status.settled:
@@ -141,6 +266,12 @@ def step_ci_check(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> Pha
         # different instants, and makes the loop untestable against a scripted clock.
         now = _monotonic()
         if not status.reported and now >= no_checks_deadline:
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {"pr": pr_number, "head_sha": "", "link_action": link_action, "checks": []},
+            )
             return PhaseResult(
                 Outcome.FAILED,
                 f"PR #{pr_number} reported no CI checks within "
@@ -149,6 +280,17 @@ def step_ci_check(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> Pha
             )
         if now >= deadline:
             waiting = ", ".join(c.name for c in status.pending) or "unknown"
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {
+                    "pr": pr_number,
+                    "head_sha": "",
+                    "link_action": link_action,
+                    "checks": [_check_payload(check) for check in status.checks],
+                },
+            )
             return PhaseResult(
                 Outcome.FAILED,
                 f"PR #{pr_number} CI did not finish within {ctx.config.ci_seconds:g}s "
@@ -156,11 +298,66 @@ def step_ci_check(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> Pha
             )
         _sleep(CI_POLL_INTERVAL)
 
+    head_sha = ctx.pr_head_sha
+    if phase.produces_contract or head_sha:
+        try:
+            head_sha = git.pr_head_sha(pr_number)
+        except GitError as exc:
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {"pr": pr_number, "head_sha": "", "link_action": link_action, "checks": []},
+            )
+            return PhaseResult(Outcome.CRASH, f"could not read PR #{pr_number} head: {exc}")
+    captured_at = datetime.now(UTC).isoformat()
+    checks = [_check_payload(check) for check in status.checks]
+    artifacts: tuple[str, ...] = ()
     if not status.failed:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.COMPLETE,
+            {
+                "pr": pr_number,
+                "head_sha": head_sha,
+                "link_action": link_action,
+                "captured_at": captured_at,
+                "checks": checks,
+            },
+        )
         names = ", ".join(c.name for c in status.checks)
         return PhaseResult(Outcome.PASS, f"{link_action}; CI green on PR #{pr_number} ({names})")
 
-    _write_ci_findings(ctx, git, pr_number, status)
+    try:
+        artifacts = _write_ci_findings(ctx, git, pr_number, status, checks)
+    except (OSError, GitError, ContractError) as exc:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {
+                "pr": pr_number,
+                "head_sha": head_sha,
+                "link_action": link_action,
+                "captured_at": captured_at,
+                "checks": checks,
+            },
+        )
+        return PhaseResult(Outcome.FAILED, f"could not persist CI failure evidence: {exc}")
+    _record_mechanical(
+        ctx,
+        phase,
+        ContractStatus.COMPLETE,
+        {
+            "pr": pr_number,
+            "head_sha": head_sha,
+            "link_action": link_action,
+            "captured_at": captured_at,
+            "checks": checks,
+        },
+        *artifacts,
+    )
     failed = ", ".join(c.name for c in status.failed)
     return PhaseResult(Outcome.BLOCK, f"CI failed on PR #{pr_number}: {failed}")
 
@@ -194,7 +391,24 @@ def _resolve_pr_number(ctx: RunContext) -> int | None:
     return pr.number
 
 
-def _write_ci_findings(ctx: RunContext, git: GitOps, pr_number: int, status: ChecksStatus) -> None:
+def _check_payload(check: Any) -> dict[str, object]:
+    return {
+        "name": check.name,
+        "state": check.state,
+        "status": getattr(check, "status", ""),
+        "conclusion": getattr(check, "conclusion", ""),
+        "url": check.url,
+        "run_id": check.run_id or "",
+    }
+
+
+def _write_ci_findings(
+    ctx: RunContext,
+    git: GitOps,
+    pr_number: int,
+    status: ChecksStatus,
+    checks: list[dict[str, object]],
+) -> tuple[str, ...]:
     """Persist the failing checks (and their logs) for the revise sequence to read."""
     sections = [
         "# CI failure — fix these before the next push\n",
@@ -204,35 +418,67 @@ def _write_ci_findings(ctx: RunContext, git: GitOps, pr_number: int, status: Che
             "make them pass.\n"
         ),
     ]
-    for check in status.failed:
+    artifacts: list[str] = []
+    for index, check in enumerate(status.failed, 1):
         sections.append(f"\n## {check.name}\n")
         if check.url:
             sections.append(f"\n{check.url}\n")
         run_id = check.run_id
         log = git.failed_check_log(run_id) if run_id else ""
+        log_name = f"ci-failure-{index}.log"
+        log_path = ctx.run_dir / log_name
+        log_path.write_text(log, encoding="utf-8")
+        artifacts.append(log_name)
+        for payload in checks:
+            if payload["name"] == check.name and payload["url"] == check.url:
+                payload["failure_log"] = log_name
+                payload["failure_log_sha256"] = file_sha256(log_path)
+                break
         sections.append(f"\n```\n{log or '(no log available)'}\n```\n")
-    try:
-        (ctx.run_dir / CI_FINDINGS_NAME).write_text("".join(sections), encoding="utf-8")
-    except OSError:
-        pass  # best-effort; the gate decision already happened, revise just won't have the file
+    (ctx.run_dir / CI_FINDINGS_NAME).write_text("".join(sections), encoding="utf-8")
+    return (CI_FINDINGS_NAME, *artifacts)
 
 
 def step_pr_head_guard(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -> PhaseResult:
     """Stop before push when somebody moved the existing PR head during this run."""
     git = ctx.deps.git
     if git is None or ctx.pr_number is None or not ctx.pr_head_sha:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {"pr": ctx.pr_number or 0, "expected": ctx.pr_head_sha, "observed": "", "matches": False},
+        )
         return PhaseResult(Outcome.FAILED, "update head guard is missing PR boundary metadata")
     try:
         current = git.pr_head_sha(ctx.pr_number)
     except GitError as exc:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {"pr": ctx.pr_number, "expected": ctx.pr_head_sha, "observed": "", "matches": False},
+        )
         return PhaseResult(Outcome.CRASH, f"could not verify PR head: {exc}")
     if current != ctx.pr_head_sha:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.COMPLETE,
+            {"pr": ctx.pr_number, "expected": ctx.pr_head_sha, "observed": current, "matches": False},
+        )
         return PhaseResult(
             Outcome.NEEDS_DECISION,
             f"PR #{ctx.pr_number} moved from {ctx.pr_head_sha[:12]} to {current[:12]}; "
             "halt and restart the update against the new head.",
             question="The PR changed during this run. Stop and restart from its new head?",
         )
+    _record_mechanical(
+        ctx,
+        phase,
+        ContractStatus.COMPLETE,
+        {"pr": ctx.pr_number, "expected": ctx.pr_head_sha, "observed": current, "matches": True},
+    )
     return PhaseResult(Outcome.PASS, f"PR head unchanged at {current[:12]}")
 
 
@@ -240,21 +486,50 @@ def step_collect_pr_evidence(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPh
     """Run local test and build commands, preserving both outcomes for semantic reviewers."""
     sections = ["# Pull request mechanical verification"]
     if ctx.deps.build_test is None:
-        sections.append("\nNo local verification runner is configured.\n")
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {"results": []},
+        )
+        return PhaseResult(Outcome.FAILED, "local PR verification is unavailable (no runner)")
     else:
-        for selection in ("test", "build"):
-            ok, log = ctx.deps.build_test(ctx.config, selection)
-            clipped = log if len(log) <= 30_000 else log[:30_000] + "\n… output truncated …"
-            sections.append(
-                f"\n## {selection.title()} — {'PASS' if ok else 'FAIL'}\n\n```text\n"
-                f"{clipped}\n```\n"
-            )
+        results: list[dict[str, object]] = []
+        evidence_artifacts: list[str] = []
+        try:
+            for selection in ("test", "build"):
+                observed = _coerce_verification_result(
+                    ctx,
+                    selection,
+                    ctx.deps.build_test(ctx.config, selection),
+                )
+                payload, artifacts = _persist_verification_evidence(ctx, phase, observed)
+                results.append(payload)
+                evidence_artifacts.extend(artifacts)
+                log = observed.combined_log
+                clipped = log if len(log) <= 30_000 else log[:30_000] + "\n… output truncated …"
+                sections.append(
+                    f"\n## {selection.title()} — {'PASS' if observed.ok else 'FAIL'}\n\n```text\n"
+                    f"{clipped}\n```\n"
+                )
+        except (OSError, TypeError, ValueError, ContractError) as exc:
+            _record_mechanical(ctx, phase, ContractStatus.UNAVAILABLE, {"results": results})
+            return PhaseResult(Outcome.FAILED, f"could not capture PR verification evidence: {exc}")
     try:
         (ctx.run_dir / (phase.artifact or PR_EVIDENCE_NAME)).write_text(
             "".join(sections), encoding="utf-8"
         )
     except OSError as exc:
+        _record_mechanical(ctx, phase, ContractStatus.UNAVAILABLE, {"results": []})
         return PhaseResult(Outcome.FAILED, f"could not write PR verification evidence: {exc}")
+    _record_mechanical(
+        ctx,
+        phase,
+        ContractStatus.COMPLETE,
+        {"results": results},
+        phase.artifact or PR_EVIDENCE_NAME,
+        *evidence_artifacts,
+    )
     return PhaseResult(Outcome.PASS, "captured local test and build evidence")
 
 
@@ -262,10 +537,36 @@ def step_publish_pr_review(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhas
     """Publish the validated review; a clean PASS merges and removes the remote branch."""
     git = ctx.deps.git
     if git is None or ctx.pr_number is None or not ctx.pr_head_sha:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {
+                "pr": ctx.pr_number or 0,
+                "head_sha": ctx.pr_head_sha,
+                "review_digest": "",
+                "comment_action": "unavailable",
+                "merge_action": "unavailable",
+                "pr_url": ctx.pr_url or "",
+            },
+        )
         return PhaseResult(Outcome.FAILED, "PR review publication is missing PR metadata")
     try:
         current = git.pr_head_sha(ctx.pr_number)
         if current != ctx.pr_head_sha:
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {
+                    "pr": ctx.pr_number,
+                    "head_sha": current,
+                    "review_digest": "",
+                    "comment_action": "stale-head",
+                    "merge_action": "not-requested",
+                    "pr_url": ctx.pr_url or "",
+                },
+            )
             return PhaseResult(
                 Outcome.FAILED,
                 f"PR #{ctx.pr_number} moved from {ctx.pr_head_sha[:12]} to {current[:12]}; "
@@ -273,6 +574,19 @@ def step_publish_pr_review(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhas
             )
         dirty = git.workspace_status().strip()
         if dirty:
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {
+                    "pr": ctx.pr_number,
+                    "head_sha": current,
+                    "review_digest": "",
+                    "comment_action": "dirty-workspace",
+                    "merge_action": "not-requested",
+                    "pr_url": ctx.pr_url or "",
+                },
+            )
             return PhaseResult(
                 Outcome.FAILED,
                 "PR review modified the read-only workspace: " + dirty.replace("\n", ", "),
@@ -295,7 +609,33 @@ def step_publish_pr_review(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhas
                 expected_base=ctx.config.pr_base,
             )
     except (GitError, OSError, ValueError, KeyError, TypeError) as exc:
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {
+                "pr": ctx.pr_number,
+                "head_sha": ctx.pr_head_sha,
+                "review_digest": "",
+                "comment_action": "failed",
+                "merge_action": "failed",
+                "pr_url": ctx.pr_url or "",
+            },
+        )
         return PhaseResult(Outcome.FAILED, f"could not publish PR review: {exc}")
+    _record_mechanical(
+        ctx,
+        phase,
+        ContractStatus.COMPLETE,
+        {
+            "pr": ctx.pr_number,
+            "head_sha": ctx.pr_head_sha,
+            "review_digest": pr_review_digest(review),
+            "comment_action": action,
+            "merge_action": str(merge_action or "not-requested"),
+            "pr_url": ctx.pr_url or "",
+        },
+    )
     if findings:
         return PhaseResult(
             Outcome.PASS,
@@ -396,20 +736,64 @@ def step_acknowledge_pr_feedback(
     """Post one idempotent receipt after the updated PR and CI agree on the pushed SHA."""
     git = ctx.deps.git
     if git is None or ctx.pr_number is None:
-        return PhaseResult(Outcome.PASS, "feedback acknowledgement skipped")
+        _record_mechanical(
+            ctx,
+            phase,
+            ContractStatus.UNAVAILABLE,
+            {
+                "pr": ctx.pr_number or 0,
+                "commit": "",
+                "acknowledged_ids": [],
+                "resolved_threads": [],
+                "warnings": ["GitHub integration unavailable"],
+                "commented": False,
+            },
+        )
+        return PhaseResult(Outcome.FAILED, "feedback acknowledgement unavailable")
     marker = f"<!-- quill-update:{ctx.run_id} -->"
     result_path = ctx.run_dir / "pr-feedback-result.json"
     try:
         previous = json.loads(result_path.read_text(encoding="utf-8"))
         if previous.get("run_id") == ctx.run_id and not previous.get("warnings"):
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.COMPLETE,
+                {
+                    "pr": int(previous["pr"]),
+                    "commit": str(previous["commit"]),
+                    "acknowledged_ids": list(previous.get("acknowledged_ids", [])),
+                    "resolved_threads": list(previous.get("resolved_threads", [])),
+                    "warnings": [],
+                    "commented": bool(previous.get("commented")),
+                },
+                "pr-feedback-result.json",
+            )
             return PhaseResult(Outcome.PASS, "feedback already acknowledged for this run")
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, KeyError, TypeError):
         pass
     result: dict[str, object] = {"run_id": ctx.run_id, "pr": ctx.pr_number, "items": []}
+    pushed = ""
+    resolved: list[str] = []
+    warnings: list[str] = []
+    already = True
     try:
         pushed = git.local_head_sha()
         remote = git.pr_head_sha(ctx.pr_number)
         if pushed != remote:
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.UNAVAILABLE,
+                {
+                    "pr": ctx.pr_number,
+                    "commit": pushed,
+                    "acknowledged_ids": [],
+                    "resolved_threads": [],
+                    "warnings": ["remote head mismatch"],
+                    "commented": False,
+                },
+            )
             return PhaseResult(
                 Outcome.FAILED,
                 f"PR head {remote[:12]} does not match pushed commit {pushed[:12]}",
@@ -423,8 +807,6 @@ def step_acknowledge_pr_feedback(
                 ctx.pr_number,
                 f"{marker}\nQuill addressed feedback {ids} in `{pushed[:12]}`; local gates and CI passed.",
             )
-        resolved: list[str] = []
-        warnings: list[str] = []
         for thread_id in ctx.feedback_threads:
             try:
                 git.reply_review_thread(
@@ -454,7 +836,32 @@ def step_acknowledge_pr_feedback(
             )
         except OSError:
             pass
+        payload = {
+            "pr": ctx.pr_number,
+            "commit": pushed,
+            "acknowledged_ids": list(ctx.feedback_ids),
+            "resolved_threads": resolved,
+            "warnings": [str(exc)],
+            "commented": bool(result.get("commented")),
+        }
+        artifacts = ("pr-feedback-result.json",) if result_path.is_file() else ()
+        _record_mechanical(ctx, phase, ContractStatus.PARTIAL, payload, *artifacts)
         return PhaseResult(Outcome.PASS, f"code shipped; feedback acknowledgement warning: {exc}")
+    payload = {
+        "pr": ctx.pr_number,
+        "commit": pushed,
+        "acknowledged_ids": list(ctx.feedback_ids),
+        "resolved_threads": resolved,
+        "warnings": warnings,
+        "commented": not already,
+    }
+    _record_mechanical(
+        ctx,
+        phase,
+        ContractStatus.PARTIAL if warnings else ContractStatus.COMPLETE,
+        payload,
+        "pr-feedback-result.json",
+    )
     if warnings:
         return PhaseResult(
             Outcome.PASS,
@@ -495,7 +902,7 @@ class _BuildTestRunner:
         self._lock = threading.Lock()
         self._active: subprocess.Popen[str] | None = None
 
-    def __call__(self, config: QuillfolioConfig, selection: str) -> tuple[bool, str]:
+    def __call__(self, config: QuillfolioConfig, selection: str) -> VerificationResult:
         build_command = config.build_command
         test_command = config.test_command
         log_dir = config.log_dir
@@ -504,13 +911,24 @@ class _BuildTestRunner:
             "test": (test_command,),
             "build_test": (build_command, test_command),
         }[selection]
-        parts: list[str] = []
+        results: list[CommandResult] = []
         for cmd in commands:
+            started = datetime.now(UTC).isoformat()
             if self._cancelled.is_set():
-                parts.append(f"$ {cmd}\nterminated by stop request")
-                log = "\n".join(parts)
-                _write_test_log(Path(self._directory), log_dir, log)
-                return False, log
+                results.append(
+                    CommandResult(
+                        cmd,
+                        None,
+                        True,
+                        False,
+                        started,
+                        datetime.now(UTC).isoformat(),
+                        "terminated by stop request",
+                    )
+                )
+                observed = VerificationResult(selection, tuple(results))
+                _write_test_log(Path(self._directory), log_dir, observed.combined_log)
+                return observed
             proc = subprocess.Popen(
                 cmd,
                 cwd=self._directory,
@@ -529,16 +947,25 @@ class _BuildTestRunner:
             with self._lock:
                 if self._active is proc:
                     self._active = None
-            parts.append(f"$ {cmd}\n{stdout}{stderr}")
+            cancelled = self._cancelled.is_set()
+            results.append(
+                CommandResult(
+                    cmd,
+                    proc.returncode,
+                    cancelled,
+                    False,
+                    started,
+                    datetime.now(UTC).isoformat(),
+                    stdout + stderr + ("\nterminated by stop request" if cancelled else ""),
+                )
+            )
             if proc.returncode != 0 or self._cancelled.is_set():
-                if self._cancelled.is_set():
-                    parts.append("terminated by stop request")
-                log = "\n".join(parts)
-                _write_test_log(Path(self._directory), log_dir, log)
-                return False, log
-        log = "\n".join(parts)
-        _write_test_log(Path(self._directory), log_dir, log)
-        return True, log
+                observed = VerificationResult(selection, tuple(results))
+                _write_test_log(Path(self._directory), log_dir, observed.combined_log)
+                return observed
+        observed = VerificationResult(selection, tuple(results))
+        _write_test_log(Path(self._directory), log_dir, observed.combined_log)
+        return observed
 
     def cancel(self) -> None:
         """Stop the active shell and every child it launched."""
@@ -578,12 +1005,11 @@ def _terminate_verification_process(proc: subprocess.Popen[str]) -> None:
     threading.Thread(target=force_kill, daemon=True).start()
 
 
-def build_test_runner(directory: str) -> Callable[..., tuple[bool, str]]:
+def build_test_runner(directory: str) -> Callable[..., VerificationResult]:
     """Run the selected local verification command(s) in ``directory``.
 
     ``selection`` is ``build``, ``test``, or the compatibility ``build_test`` pair. Returns
-    ``(ok, log)``; the captured output is also written to ``<log_dir>/test-log.txt`` for the revise
-    step to read. Any non-zero exit means not ok.
+    a typed result; captured output is also written to ``<log_dir>/test-log.txt`` for humans.
     """
     return _BuildTestRunner(directory)
 

@@ -1,0 +1,20 @@
+{
+  "kind": "quill.artifact",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Summarize the completed phase, its concrete outputs, verification, unknowns, and downstream obligations."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "outputs", "verification", "unknowns", "obligations"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "outputs": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "verification": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unknowns": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "obligations": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

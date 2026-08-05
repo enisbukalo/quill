@@ -47,6 +47,10 @@ class PhaseEntry:
     duration_s: float | None = None
     tools: dict[str, int] = field(default_factory=dict)
     reason: str | None = None
+    contract_kind: str | None = None
+    contract_version: int | None = None
+    contract_status: str | None = None
+    contract_digest: str | None = None
 
 
 @dataclass(slots=True)
@@ -113,6 +117,8 @@ class RunState:
     self_checks: dict[str, str] = field(default_factory=dict)
     #: Same-session malformed-output recovery state, populated only when recovery runs.
     self_fixes: dict[str, str] = field(default_factory=dict)
+    #: Latest high-level contract lifecycle per phase; payloads remain artifact-endpoint only.
+    contract_states: dict[str, dict[str, object]] = field(default_factory=dict)
     #: Every configured phase entry, including retry-loop re-entry, in execution order.
     phase_sequence: list[str] = field(default_factory=list)
 
@@ -241,6 +247,39 @@ class RunState:
             if phase is not None:
                 self.self_fixes[phase] = "completed" if event.get("repaired") is True else "failed"
 
+        elif etype in {
+            events.PROJECTION_STARTED,
+            events.PROJECTION_DONE,
+            events.CONTRACT_VALIDATED,
+            events.CONTRACT_INCOMPLETE,
+            events.CONTRACT_PUBLISHED,
+        }:
+            phase = _as_str(event.get("phase")) or self.phase
+            if phase is not None:
+                current = dict(self.contract_states.get(phase, {}))
+                current["phase"] = phase
+                current["kind"] = _as_str(event.get("contract_kind")) or current.get("kind", "")
+                if etype == events.PROJECTION_STARTED:
+                    current["state"] = "projecting"
+                    current["attempt"] = _as_int(event.get("attempt"), default=self.attempt)
+                    self.activity = "projecting_contract"
+                    self.activity_label = f"Projecting {self.phase_label or phase} handoff"
+                elif etype == events.PROJECTION_DONE:
+                    current["state"] = "projected" if event.get("valid") is True else "rejected"
+                elif etype == events.CONTRACT_INCOMPLETE:
+                    current["state"] = "incomplete"
+                    current["missing_count"] = _as_int(event.get("missing_count"), default=0)
+                elif etype == events.CONTRACT_VALIDATED:
+                    current["state"] = "validated"
+                    current["status"] = _as_str(event.get("contract_status")) or ""
+                else:
+                    current["state"] = "published"
+                    current["version"] = _as_int(event.get("contract_version"), default=0)
+                    current["status"] = _as_str(event.get("contract_status")) or ""
+                    current["digest"] = _as_str(event.get("contract_digest")) or ""
+                    current["attempt"] = _as_int(event.get("attempt"), default=self.attempt)
+                self.contract_states[phase] = current
+
         elif etype == events.PHASE_DONE or etype == events.GATE_VERDICT:
             self._record(event, verdict=_as_str(event.get("verdict")))
             completed_phase = _as_str(event.get("phase"))
@@ -298,6 +337,10 @@ class RunState:
                 duration_s=_as_optional_float(event.get("duration_s")),
                 tools=_as_tool_counts(event.get("tools")),
                 reason=_as_str(event.get("reason")),
+                contract_kind=_as_str(event.get("contract_kind")),
+                contract_version=_as_optional_int(event.get("contract_version")),
+                contract_status=_as_str(event.get("contract_status")),
+                contract_digest=_as_str(event.get("contract_digest")),
             )
         )
 
@@ -308,6 +351,10 @@ def _as_str(value: object) -> str | None:
 
 def _as_int(value: object, *, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _as_optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _as_float(value: object) -> float:
@@ -390,7 +437,12 @@ def _as_phase_graph(value: object) -> PhaseGraph | None:
             return None
         if not isinstance(kinds, list) or any(kind not in ("normal", "retry") for kind in kinds):
             return None
-        edges.append({"key": key, "source": source, "target": target, "kinds": kinds})
+        contracts = edge.get("contracts", [])
+        if not isinstance(contracts, list) or any(not isinstance(item, str) for item in contracts):
+            return None
+        edges.append(
+            {"key": key, "source": source, "target": target, "kinds": kinds, "contracts": contracts}
+        )
     # Every field was narrowed above; spelling the final typed objects keeps this validator strict.
     typed_nodes = [
         {
@@ -412,6 +464,7 @@ def _as_phase_graph(value: object) -> PhaseGraph | None:
             "source": str(edge["source"]),
             "target": str(edge["target"]),
             "kinds": [kind for kind in edge["kinds"] if kind in ("normal", "retry")],
+            "contracts": [str(item) for item in cast(list[object], edge["contracts"])],
         }
         for edge in edges
         if isinstance(edge["kinds"], list)

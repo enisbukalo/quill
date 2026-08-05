@@ -97,7 +97,7 @@ class CheckpointRecorder:
         safe_id = "".join(char if char.isalnum() or char in "._-" else "-" for char in self.run_id)
         return f"refs/quill/runs/{safe_id}"
 
-    def before_phase(self, phase: str) -> None:
+    def before_phase(self, phase: str) -> str | None:
         """Save the exact state immediately before ``phase``.
 
         Delivery phases consume the accumulated work as one normal commit, so local checkpoint
@@ -107,7 +107,7 @@ class CheckpointRecorder:
         # and the manifest update remain one serial transaction.
         with self._lock:
             if self.delivery_started:
-                return
+                return None
             self._ensure_base()
             self._commit(f"quill checkpoint {self.run_id} before {phase}")
             commit = self.run(["git", "rev-parse", "HEAD"]).strip()
@@ -119,6 +119,7 @@ class CheckpointRecorder:
             if phase in {"commit", "commit_update"}:
                 self.run(["git", "reset", "--mixed", self.base])
                 self.delivery_started = True
+            return commit
 
     def recover_terminal(self, phase: str | None) -> bool:
         """Capture work left by a failed/halted phase. Return whether useful changes exist."""

@@ -23,7 +23,7 @@ from quill.pipeline import make_run_id
 from quill.preflight import gh_authenticated, gh_available
 from quill.telemetry import SCHEMA_VERSION, build_breakdown
 from quill.restart import model_overrides as restart_model_overrides
-from quill.restart import seed_events, write_seed
+from quill.restart import seed_events, source_phase_set_hash, write_seed
 from quill_api.deps import ServicesDep
 from quill_api.paths import PathEscape, resolve_within
 from quill_api.queue import QueuedRun
@@ -104,6 +104,10 @@ def _terminal_breakdown(run_id: str, services: Services) -> dict[str, Any]:
                 duration_s=item.duration_s,
                 tools=item.tools,
                 reason=item.reason,
+                contract_kind=item.contract_kind,
+                contract_version=item.contract_version,
+                contract_status=item.contract_status,
+                contract_digest=item.contract_digest,
             ).model_dump()
             for item in live.history
         ]
@@ -527,6 +531,12 @@ def restart_run(run_id: str, body: RestartRunRequest, services: ServicesDep) -> 
         [item for item in source_breakdown.get("phase_executions", []) if isinstance(item, dict)],
     )
     inherited_models.update(body.model_overrides)
+    inherited_phase_set_hash = source_phase_set_hash(services.settings.runs_root / run_id)
+    if inherited_phase_set_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="source run has no contract-aware phase-set identity and cannot restart safely",
+        )
 
     with services.run_admission_lock:
         existing = services.store.active
@@ -579,6 +589,8 @@ def restart_run(run_id: str, body: RestartRunRequest, services: ServicesDep) -> 
             phase=selected.phase,
             start_phase=selected.start_phase,
             executions=source_executions,
+            phase_set_hash=inherited_phase_set_hash,
+            checkpoint=selected.checkpoint,
         )
         services.store.add(state)
         services.history.record(state)
@@ -754,6 +766,10 @@ def read_run(run_id: str, services: ServicesDep) -> RunDetail:
                     duration_s=h.duration_s,
                     tools=h.tools,
                     reason=h.reason,
+                    contract_kind=h.contract_kind,
+                    contract_version=h.contract_version,
+                    contract_status=h.contract_status,
+                    contract_digest=h.contract_digest,
                 )
                 for h in run.history
             ],
@@ -843,6 +859,10 @@ def read_breakdown(run_id: str, services: ServicesDep) -> dict[str, object]:
                 duration_s=h.duration_s,
                 tools=h.tools,
                 reason=h.reason,
+                contract_kind=h.contract_kind,
+                contract_version=h.contract_version,
+                contract_status=h.contract_status,
+                contract_digest=h.contract_digest,
             ).model_dump()
             for h in state.history
         ]
@@ -883,16 +903,16 @@ def decide(run_id: str, body: DecisionRequest, services: ServicesDep) -> RunSumm
 
 @router.get("/runs/{run_id}/artifacts")
 def list_artifacts(run_id: str, services: ServicesDep) -> ArtifactList:
-    """The files a run produced — plans, findings, logs, transcripts."""
+    """The files a run produced, including nested immutable contracts and bound evidence."""
     run_dir = services.settings.runs_root / run_id
     if not run_dir.is_dir():
         return ArtifactList(run_id=run_id, artifacts=[])
     return ArtifactList(
         run_id=run_id,
         artifacts=[
-            ArtifactInfo(name=path.name, size=path.stat().st_size)
-            for path in sorted(run_dir.iterdir())
-            if path.is_file()
+            ArtifactInfo(name=path.relative_to(run_dir).as_posix(), size=path.stat().st_size)
+            for path in sorted(run_dir.rglob("*"))
+            if path.is_file() and not path.is_symlink()
         ],
     )
 
@@ -902,14 +922,16 @@ def download_artifacts(run_id: str, services: ServicesDep) -> StreamingResponse:
     """Download every artifact from one run as a ZIP archive."""
     run_dir = services.settings.runs_root / run_id
     artifacts = (
-        sorted(path for path in run_dir.iterdir() if path.is_file()) if run_dir.is_dir() else []
+        sorted(path for path in run_dir.rglob("*") if path.is_file() and not path.is_symlink())
+        if run_dir.is_dir()
+        else []
     )
     if not artifacts:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no artifacts")
     archive = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         for path in artifacts:
-            bundle.write(path, arcname=path.name)
+            bundle.write(path, arcname=path.relative_to(run_dir).as_posix())
     archive.seek(0)
     safe_run_id = re.sub(r"[^A-Za-z0-9._-]", "_", run_id)
 

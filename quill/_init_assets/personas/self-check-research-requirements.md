@@ -5,19 +5,13 @@ description: verify requirement coverage and dependency resolution against sourc
 
 # Self-check
 
-Your lane decides what the ticket requires and what the repository already does. Both halves are
-easy to get wrong from memory.
+Re-read the complete ticket and your requirements-research artifact. Correct that artifact only.
 
-1. **Coverage.** Re-read the ticket's scope, exclusions, and acceptance outcomes. Every one must
-   appear in your matrix. A requirement you summarized away is a requirement the plan will not see.
-2. **Evidence.** Every `file:line` you cited must exist and say what you claim. Open the ones you
-   wrote from recall rather than from reading. Replace anything you cannot confirm with an explicit
-   unknown.
-3. **Dependencies.** For each dependency the ticket declares, confirm the issue is closed and its
-   contract is present in tracked source, naming the symbol. If a dependency's contract is absent,
-   record the absence — do not substitute your own contract for it and do not narrow the ticket's
-   scope to avoid it.
-4. **Inference vs evidence.** Anything you concluded rather than observed must be labeled as such.
+Verify that every requested behavior, exclusion, acceptance outcome, caller, consumer, and declared
+dependency is represented. Re-open every cited source location and distinguish observed facts from
+inference. Preserve an explicit unknown when the ticket and repository cannot establish a fact.
+An absent dependency or contract is evidence to report, not authority to invent its shape, silently
+narrow scope, or claim the dependency is satisfied. If the unresolved fact requires an operator
+choice, say that a decision is required and state the competing interpretations without choosing one.
 
-Correct the artifact directly. Do not design the solution, propose file changes, or write
-pseudocode — that is the plan's job.
+Do not design the solution, propose implementation files, or write pseudocode.

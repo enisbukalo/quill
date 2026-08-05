@@ -1,0 +1,21 @@
+{
+  "kind": "quill.plan",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["State grounded decisions, ordered implementation phases, verification, unknowns, and handoffs."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "decisions", "phases", "evidence", "verification", "unknowns"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "decisions": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "phases": {"type": "array", "min_items": 1, "items": {"type": "string", "min_length": 1}},
+      "evidence": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "verification": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "unknowns": {"type": "array", "items": {"type": "string", "min_length": 1}}
+    }
+  }
+}

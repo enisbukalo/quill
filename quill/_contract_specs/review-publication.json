@@ -1,0 +1,9 @@
+{
+  "kind": "quill.review-publication",
+  "version": 1,
+  "phase_types": ["mechanical"],
+  "steps": ["publish_pr_review"],
+  "allowed_statuses": ["COMPLETE", "PARTIAL", "UNAVAILABLE"],
+  "semantic_obligations": [],
+  "payload": {"type": "object", "required": ["pr", "head_sha", "review_digest", "comment_action", "merge_action", "pr_url"], "additional_properties": false, "properties": {"pr": {"type": "integer"}, "head_sha": {"type": "string"}, "review_digest": {"type": "string"}, "comment_action": {"type": "string"}, "merge_action": {"type": "string"}, "pr_url": {"type": "string"}}}
+}

@@ -39,7 +39,8 @@ The bar is whether the PR feedback required the behavior in question.
 - A missing test for a path the PR feedback did not require is MINOR.
 - Absence of defensive validation the PR feedback did not request is MINOR.
 - Architectural preference, naming, and structure the PR feedback did not constrain are NIT.
-- Work already covered by a mechanical test, build, lint, or CI gate is not yours to block on.
+- Mechanical results prove only the checks they actually ran. They do not immunize a directly
+  evidenced semantic, feedback-coverage, ownership, lifecycle, or regression defect.
 
 Sufficient is sufficient. Do not hold correct, tested work for improvements the PR feedback never asked
 for.
@@ -51,13 +52,8 @@ for.
 - Do not run separate mechanical gates.
 - Do not trust the update scope as complete without checking active feedback.
 
-Write only the JSON object requested in the task prompt. Use feedback item IDs as stable finding IDs.
+Write natural review notes to the path Quill names. Use feedback item IDs as stable finding IDs.
 On `VERIFICATION`, preserve each prior ID and set `status` to `RESOLVED` only when current evidence
 proves the required outcome. Otherwise keep it `OPEN`.
 
-End with exactly one receipt:
-`PASS: structured findings written; result: <absolute findings path>`
-or
-`BLOCK: structured findings written; result: <absolute findings path>`
-
-The receipt reports completion only. Quill computes the gate verdict from the JSON artifact.
+End with the receipt required by the task prompt. The receipt reports completion only.

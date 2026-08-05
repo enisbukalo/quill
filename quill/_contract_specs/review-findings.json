@@ -1,0 +1,36 @@
+{
+  "kind": "quill.review.findings",
+  "version": 1,
+  "phase_types": ["reviewer", "finalizer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Preserve substantiated finding identity, severity, evidence, failure scenario, required outcome, owner, and disposition."],
+  "payload": {
+    "type": "object",
+    "required": ["schema_version", "findings"],
+    "additional_properties": false,
+    "properties": {
+      "schema_version": {"type": "integer", "enum": [1]},
+      "findings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "severity", "status", "title", "requirement", "evidence", "failure_scenario", "required_outcome"],
+          "additional_properties": true,
+          "properties": {
+            "id": {"type": "string", "min_length": 1},
+            "severity": {"type": "string", "enum": ["CRITICAL", "MAJOR", "MINOR", "NIT"]},
+            "status": {"type": "string", "enum": ["OPEN", "RESOLVED"]},
+            "title": {"type": "string", "min_length": 1},
+            "requirement": {"type": "string", "min_length": 1},
+            "evidence": {"type": "string", "min_length": 1},
+            "failure_scenario": {"type": "string", "min_length": 1},
+            "required_outcome": {"type": "string", "min_length": 1},
+            "owner": {"type": "string", "min_length": 1},
+            "introduced_by_revision": {"type": "string", "min_length": 1}
+          }
+        }
+      }
+    }
+  }
+}

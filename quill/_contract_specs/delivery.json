@@ -1,0 +1,23 @@
+{
+  "kind": "quill.delivery",
+  "version": 1,
+  "phase_types": ["producer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE", "PARTIAL", "UNAVAILABLE"],
+  "semantic_obligations": ["Record delivery summary and unresolved work; Quill supplies branch, commit, PR, and worktree identity."],
+  "payload": {
+    "type": "object",
+    "required": ["summary", "unresolved", "branch", "local_sha", "remote_sha", "pr", "pr_url", "clean"],
+    "additional_properties": false,
+    "properties": {
+      "summary": {"type": "string", "min_length": 1},
+      "unresolved": {"type": "array", "items": {"type": "string", "min_length": 1}},
+      "branch": {"type": "string", "min_length": 1},
+      "local_sha": {"type": "string", "min_length": 1},
+      "remote_sha": {"type": "string", "min_length": 1},
+      "pr": {"type": "integer"},
+      "pr_url": {"type": "string", "min_length": 1},
+      "clean": {"type": "boolean"}
+    }
+  }
+}

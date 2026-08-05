@@ -1,0 +1,28 @@
+{
+  "kind": "quill.verification",
+  "version": 1,
+  "phase_types": ["mechanical"],
+  "steps": ["build", "test", "build_test"],
+  "allowed_statuses": ["COMPLETE", "UNAVAILABLE"],
+  "semantic_obligations": [],
+  "payload": {
+    "type": "object",
+    "required": ["selection", "commands"],
+    "additional_properties": false,
+    "properties": {
+      "selection": {"type": "string", "enum": ["build", "test", "build_test"]},
+      "source_sha": {"type": "string", "min_length": 1},
+      "worktree_fingerprint": {"type": "string", "min_length": 1},
+      "commands": {"type": "array", "items": {"type": "object", "required": ["command", "exit_code", "cancelled", "timed_out", "started_at", "ended_at", "log", "log_sha256"], "additional_properties": false, "properties": {
+        "command": {"type": "string", "min_length": 1},
+        "exit_code": {"type": "integer"},
+        "cancelled": {"type": "boolean"},
+        "timed_out": {"type": "boolean"},
+        "started_at": {"type": "string", "min_length": 1},
+        "ended_at": {"type": "string", "min_length": 1},
+        "log": {"type": "string", "min_length": 1},
+        "log_sha256": {"type": "string", "min_length": 64}
+      }}}
+    }
+  }
+}

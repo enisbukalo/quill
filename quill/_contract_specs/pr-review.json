@@ -1,0 +1,18 @@
+{
+  "kind": "quill.pr.review",
+  "version": 1,
+  "phase_types": ["finalizer"],
+  "steps": [],
+  "allowed_statuses": ["COMPLETE", "INCOMPLETE"],
+  "semantic_obligations": ["Reconcile blocking PR findings against the exact reviewed head."],
+  "payload": {
+    "type": "object",
+    "required": ["verdict", "summary", "findings"],
+    "additional_properties": false,
+    "properties": {
+      "verdict": {"type": "string", "enum": ["PASS", "BLOCK"]},
+      "summary": {"type": "string"},
+      "findings": {"type": "array", "items": {"type": "object", "properties": {}, "additional_properties": true}}
+    }
+  }
+}

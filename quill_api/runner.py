@@ -19,7 +19,6 @@ at a time even though only one executes.
 
 from __future__ import annotations
 
-import shutil
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
@@ -38,7 +37,7 @@ from quill.modelserver import make_model_server
 from quill.modelserver import VllmServer
 from quill.project_board import ProjectBoard
 from quill.pipeline import PipelineDeps
-from quill.restart import SEED_NAME, seed_transcripts
+from quill.restart import RestartError, prepare_contract_restart
 from quill.runners import UnknownRunnerError, get_runner
 from quill.telemetry import (
     SCHEMA_VERSION,
@@ -332,7 +331,13 @@ class RunManager:
                     queued.checkpoint_commit,
                     base=config.pr_base,
                 )
-                self._copy_restart_artifacts(queued.source_run_id, run_dir)
+                self._copy_restart_artifacts(
+                    queued.source_run_id,
+                    run_dir,
+                    config=config,
+                    start_phase=queued.start_phase,
+                    checkpoint=queued.checkpoint_commit,
+                )
             elif not config_workspace.requested_branch_exists:
                 workspace = self._workspaces.prepare(
                     queued.repo, queued.branch, base=config.pr_base
@@ -725,26 +730,34 @@ class RunManager:
             cleanup_error = f"workspace cleanup failed: {exc}"
             state.error = f"{state.error}; {cleanup_error}" if state.error else cleanup_error
 
-    def _copy_restart_artifacts(self, source_run_id: str | None, target: Path) -> None:
-        """Seed artifacts and only transcripts inherited before the selected boundary."""
+    def _copy_restart_artifacts(
+        self,
+        source_run_id: str | None,
+        target: Path,
+        *,
+        config: QuillfolioConfig,
+        start_phase: str | None,
+        checkpoint: str | None,
+    ) -> None:
+        """Validate and seed only the selected boundary's contract/evidence closure."""
         if source_run_id is None:
             raise WorkspaceError("restart source run is missing")
+        if start_phase is None or checkpoint is None:
+            raise WorkspaceError("restart boundary is missing its phase or checkpoint identity")
         source = self._runs_root / source_run_id
         if not source.is_dir():
             raise WorkspaceError(f"restart source artifacts for {source_run_id} are missing")
-        target.mkdir(parents=True, exist_ok=True)
-        excluded = {"state.jsonl", "phase-checkpoints.json", SEED_NAME}
-        inherited_transcripts = seed_transcripts(target)
-        for path in source.iterdir():
-            if path.name in excluded:
-                continue
-            if path.name.startswith("stream-") and path.name not in inherited_transcripts:
-                continue
-            destination = target / path.name
-            if path.is_dir():
-                shutil.copytree(path, destination, dirs_exist_ok=True)
-            elif path.is_file():
-                shutil.copy2(path, destination)
+        try:
+            prepare_contract_restart(
+                source,
+                target,
+                config=config,
+                start_phase=start_phase,
+                source_run_id=source_run_id,
+                checkpoint=checkpoint,
+            )
+        except RestartError as exc:
+            raise WorkspaceError(f"restart contract closure is invalid: {exc}") from exc
 
     def _record_history(self, state: RunState) -> None:
         if self._history_record is not None:

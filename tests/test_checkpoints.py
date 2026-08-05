@@ -41,12 +41,14 @@ def test_records_latest_boundary_and_terminal_work(tmp_path: Path) -> None:
         phases=("plan", "impl", "review"),
     )
 
-    recorder.before_phase("plan")
+    plan_checkpoint = recorder.before_phase("plan")
+    assert plan_checkpoint == _git(repo, "rev-parse", "HEAD")
     (repo / "feature.txt").write_text("first\n", encoding="utf-8")
-    recorder.before_phase("impl")
+    impl_checkpoint = recorder.before_phase("impl")
     first_impl = load_manifest(run_dir)
     assert first_impl is not None
     assert first_impl.commit_for("impl") == _git(repo, "rev-parse", "HEAD")
+    assert impl_checkpoint == first_impl.commit_for("impl")
 
     (repo / "feature.txt").write_text("second\n", encoding="utf-8")
     assert recorder.recover_terminal("impl") is True

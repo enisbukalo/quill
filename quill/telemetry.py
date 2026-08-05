@@ -13,7 +13,7 @@ from quill.config import LOCAL_BACKENDS
 from quill.eventlog import EVENT_LOG_NAME
 from quill.spawn_io import pi_child_usage
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def token_cost(
@@ -227,6 +227,10 @@ def _history_from_event_log(path: Path, warnings: list[str]) -> list[dict[str, A
                         "tools": event.get("tools"),
                         "verdict": event.get("verdict"),
                         "reason": event.get("reason"),
+                        "contract_kind": event.get("contract_kind"),
+                        "contract_version": event.get("contract_version"),
+                        "contract_status": event.get("contract_status"),
+                        "contract_digest": event.get("contract_digest"),
                         "self_check_status": initial.get("self_check_status", "not_run"),
                         "self_check_duration_s": initial.get("self_check_duration_s"),
                         "self_fix_status": initial.get("self_fix_status", "not_run"),
@@ -253,6 +257,10 @@ def _history_from_event_log(path: Path, warnings: list[str]) -> list[dict[str, A
                 "tools": None,
                 "verdict": None,
                 "reason": None,
+                "contract_kind": None,
+                "contract_version": None,
+                "contract_status": None,
+                "contract_digest": None,
                 "self_check_status": event.get("self_check_status", "not_run"),
                 "self_check_duration_s": event.get("self_check_duration_s"),
                 "self_fix_status": event.get("self_fix_status", "not_run"),
@@ -400,6 +408,10 @@ def _phase_entry(
         "model": history.get("model") or _one_value(sessions, "model"),
         "verdict": history.get("verdict"),
         "rejection_reason": history.get("reason"),
+        "contract_kind": history.get("contract_kind"),
+        "contract_version": history.get("contract_version"),
+        "contract_status": history.get("contract_status"),
+        "contract_digest": history.get("contract_digest"),
         "self_check_status": history.get("self_check_status", "not_run"),
         "self_check_duration_s": history.get("self_check_duration_s"),
         "self_fix_status": history.get("self_fix_status", "not_run"),

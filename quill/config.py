@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from quill.contracts import ContractError, default_catalog
 from quill.findings import (
     DEFAULT_BLOCKING_POLICY,
     RETRY_MODES,
@@ -173,6 +174,13 @@ class PhaseDef:
         str, ...
     ] = ()  # producer: latest artifacts combined into one canonical handoff
     audits: tuple[AuditDef, ...] = ()  # reviewer: concurrent, same-model read-only audit lanes
+    #: Exact durable output contract. Config loading requires it even though direct test
+    #: construction may leave it empty to exercise isolated legacy-free engine helpers.
+    produces_contract: str = ""
+    #: Exact kinds/versions this phase can consume across every declared forward and retry edge.
+    accepts_contracts: tuple[str, ...] = ()
+    #: Contract-only dependencies not already represented by inputs/against/reconciles/retry.
+    requires: tuple[str, ...] = ()
 
     @property
     def model(self) -> str | None:
@@ -320,6 +328,14 @@ class QuillfolioConfig:
                     "against": list(ph.against),
                     "inputs": list(ph.inputs),
                     "synthesizes": list(ph.synthesizes),
+                    "produces_contract": ph.produces_contract,
+                    "accepts_contracts": list(ph.accepts_contracts),
+                    "requires": list(ph.requires),
+                    "contract_spec_digest": (
+                        default_catalog().resolve(ph.produces_contract).digest
+                        if ph.produces_contract
+                        else ""
+                    ),
                     "audits": [
                         {
                             "id": audit.id,
@@ -519,6 +535,13 @@ def _parse_phase(entry: object, index: int) -> PhaseDef:
         inputs=_as_str_tuple(entry.get("inputs")),
         synthesizes=_as_str_tuple(entry.get("synthesizes")),
         audits=tuple(audits),
+        produces_contract=(
+            str(entry.get("produces_contract", "")).strip()
+            if isinstance(entry.get("produces_contract", ""), str)
+            else ""
+        ),
+        accepts_contracts=_as_str_tuple(entry.get("accepts_contracts")),
+        requires=_as_str_tuple(entry.get("requires")),
     )
 
 
@@ -766,9 +789,10 @@ def _validate_phases(config: QuillfolioConfig) -> None:
                 raise ConfigInvalid(
                     f"phase '{ph.id}' selective_on_block requires a structured gate."
                 )
-            if len(ph.on_block) != 1:
+            if len(ph.on_block) > 1:
                 raise ConfigInvalid(
-                    f"phase '{ph.id}' selective_on_block requires one synthesis on_block phase."
+                    f"phase '{ph.id}' selective_on_block allows no on_block in direct mode or one "
+                    "synthesis on_block phase."
                 )
             candidates: list[PhaseDef] = []
             if len(set(ph.selective_on_block)) != len(ph.selective_on_block):
@@ -783,10 +807,11 @@ def _validate_phases(config: QuillfolioConfig) -> None:
                     raise ConfigInvalid(
                         f"phase '{ph.id}' selective target '{target}' is not a parallel producer."
                     )
-                if ids.index(target) >= ids.index(ph.on_block[0]):
+                boundary = ids.index(ph.on_block[0]) if ph.on_block else ids.index(ph.id)
+                if ids.index(target) >= boundary:
                     raise ConfigInvalid(
-                        f"phase '{ph.id}' selective target '{target}' must run before synthesis "
-                        f"phase '{ph.on_block[0]}'."
+                        f"phase '{ph.id}' selective target '{target}' must run before its retry "
+                        "boundary."
                     )
                 candidates.append(candidate)
             groups = {candidate.parallel_group for candidate in candidates}
@@ -794,17 +819,26 @@ def _validate_phases(config: QuillfolioConfig) -> None:
                 raise ConfigInvalid(
                     f"phase '{ph.id}' selective_on_block targets must share one parallel_group."
                 )
-            synthesis = config.phase(ph.on_block[0])
-            assert synthesis is not None
-            if synthesis.type != "producer" or synthesis.parallel_group is not None:
-                raise ConfigInvalid(
-                    f"phase '{ph.id}' on_block target '{synthesis.id}' must be a serial producer synthesis."
-                )
-            if set(synthesis.synthesizes) != set(ph.selective_on_block):
-                raise ConfigInvalid(
-                    f"phase '{ph.id}' synthesis '{synthesis.id}' must synthesize every selective "
-                    "retry lane exactly once."
-                )
+            if ph.on_block:
+                synthesis = config.phase(ph.on_block[0])
+                assert synthesis is not None
+                if synthesis.type != "producer" or synthesis.parallel_group is not None:
+                    raise ConfigInvalid(
+                        f"phase '{ph.id}' on_block target '{synthesis.id}' must be a serial "
+                        "producer synthesis."
+                    )
+                if set(synthesis.synthesizes) != set(ph.selective_on_block):
+                    raise ConfigInvalid(
+                        f"phase '{ph.id}' synthesis '{synthesis.id}' must synthesize every "
+                        "selective retry lane exactly once."
+                    )
+            else:
+                missing_against = sorted(set(ph.selective_on_block) - set(ph.against))
+                if missing_against:
+                    raise ConfigInvalid(
+                        f"phase '{ph.id}' direct selective gate must review every retry lane; "
+                        f"missing against: {', '.join(missing_against)}."
+                    )
             selected_group = candidates[0].parallel_group
             assert selected_group is not None
             all_group_ids = {
@@ -820,6 +854,127 @@ def _validate_phases(config: QuillfolioConfig) -> None:
         if ph.structured_findings and ph.type not in ("reviewer", "finalizer"):
             raise ConfigInvalid(
                 f"phase '{ph.id}' enables structured_findings but is not a reviewer/finalizer."
+            )
+
+    for phase in config.phases:
+        _validate_phase_contract(config, phase)
+    _validate_contract_edges(config)
+
+
+def phase_contract_dependencies(config: QuillfolioConfig) -> dict[str, tuple[str, ...]]:
+    """Return every forward contract dependency keyed by consumer phase ID.
+
+    Retry contracts flow in the opposite direction and are validated separately because their
+    producer gate appears later in the normal phase order.
+    """
+    dependencies: dict[str, tuple[str, ...]] = {}
+    for phase in config.phases:
+        ordered = (*phase.inputs, *phase.synthesizes, *phase.against, *phase.reconciles, *phase.requires)
+        dependencies[phase.id] = tuple(dict.fromkeys(ordered))
+    return dependencies
+
+
+def _validate_phase_contract(config: QuillfolioConfig, phase: PhaseDef) -> None:
+    if not phase.produces_contract:
+        raise ConfigInvalid(
+            f"phase '{phase.id}' is missing produces_contract; every phase must publish an exact "
+            "versioned handoff (for example 'quill.artifact/v1')."
+        )
+    try:
+        spec = default_catalog().resolve(phase.produces_contract)
+    except ContractError as exc:
+        raise ConfigInvalid(f"phase '{phase.id}' has invalid produces_contract: {exc}") from exc
+    if phase.type not in spec.phase_types:
+        raise ConfigInvalid(
+            f"phase '{phase.id}' type '{phase.type}' cannot produce {phase.produces_contract}."
+        )
+    if spec.steps and phase.step not in spec.steps:
+        allowed = ", ".join(spec.steps)
+        raise ConfigInvalid(
+            f"phase '{phase.id}' step '{phase.step}' cannot produce {phase.produces_contract}; "
+            f"allowed steps: {allowed}."
+        )
+    if phase.type == "mechanical" and not spec.steps:
+        raise ConfigInvalid(
+            f"mechanical phase '{phase.id}' uses {phase.produces_contract}, which is not bound to "
+            "a mechanical step."
+        )
+    if len(set(phase.accepts_contracts)) != len(phase.accepts_contracts):
+        raise ConfigInvalid(f"phase '{phase.id}' accepts_contracts contains duplicates.")
+    for identifier in phase.accepts_contracts:
+        try:
+            default_catalog().resolve(identifier)
+        except ContractError as exc:
+            raise ConfigInvalid(
+                f"phase '{phase.id}' has invalid accepts_contracts entry: {exc}"
+            ) from exc
+    if len(set(phase.requires)) != len(phase.requires):
+        raise ConfigInvalid(f"phase '{phase.id}' requires contains duplicate phase ids.")
+
+
+def _validate_contract_edges(config: QuillfolioConfig) -> None:
+    ids = config.phase_ids
+    dependencies = phase_contract_dependencies(config)
+    for phase in config.phases:
+        semantic = (*phase.inputs, *phase.synthesizes, *phase.against, *phase.reconciles)
+        overlap = sorted(set(semantic) & set(phase.requires))
+        if overlap:
+            raise ConfigInvalid(
+                f"phase '{phase.id}' repeats semantic dependencies in requires: {', '.join(overlap)}."
+            )
+        seen_relations: dict[str, str] = {}
+        for relation, targets in (
+            ("inputs", phase.inputs),
+            ("synthesizes", phase.synthesizes),
+            ("against", phase.against),
+            ("reconciles", phase.reconciles),
+        ):
+            for target in targets:
+                previous = seen_relations.get(target)
+                if previous is not None:
+                    raise ConfigInvalid(
+                        f"phase '{phase.id}' repeats dependency '{target}' across "
+                        f"{previous} and {relation}."
+                    )
+                seen_relations[target] = relation
+        for target in phase.requires:
+            if target not in ids:
+                raise ConfigInvalid(f"phase '{phase.id}' requires unknown phase '{target}'.")
+            if ids.index(target) >= ids.index(phase.id):
+                raise ConfigInvalid(
+                    f"phase '{phase.id}' requires '{target}', which does not run before it."
+                )
+
+    incoming: dict[str, list[str]] = {phase.id: list(dependencies[phase.id]) for phase in config.phases}
+    # A blocking gate's validated result is consumed by every revise target. Selective lanes are the
+    # actual consumers even in synthesis-backed mode; the serial synthesis also consumes the gate
+    # through on_block and the selected lane contracts through synthesizes.
+    retry_producers: dict[str, list[str]] = {phase.id: [] for phase in config.phases}
+    for gate in config.phases:
+        if not gate.gates:
+            continue
+        targets = tuple(dict.fromkeys((*gate.selective_on_block, *gate.on_block)))
+        for target in targets:
+            if target in retry_producers:
+                retry_producers[target].append(gate.id)
+
+    for phase in config.phases:
+        producers = incoming[phase.id] + retry_producers[phase.id]
+        expected = {
+            producer.produces_contract
+            for producer_id in producers
+            if (producer := config.phase(producer_id)) is not None
+        }
+        accepted = set(phase.accepts_contracts)
+        missing = sorted(expected - accepted)
+        unused = sorted(accepted - expected)
+        if missing:
+            raise ConfigInvalid(
+                f"phase '{phase.id}' does not accept required contract(s): {', '.join(missing)}."
+            )
+        if unused:
+            raise ConfigInvalid(
+                f"phase '{phase.id}' accepts contract(s) with no declared edge: {', '.join(unused)}."
             )
 
 

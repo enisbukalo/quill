@@ -24,6 +24,7 @@ class PhaseGraphEdge(TypedDict):
     source: str
     target: str
     kinds: list[Literal["normal", "retry"]]
+    contracts: NotRequired[list[str]]
 
 
 class PhaseGraphGroup(TypedDict):
@@ -71,7 +72,7 @@ def build_phase_graph(phases: list[PhaseDef]) -> PhaseGraph:
                         "column": column,
                         "lane": lane,
                         "group": phase.id,
-                        "self_check": False,
+                        "self_check": phase.self_check,
                         "self_fix": True,
                     }
                 )
@@ -132,8 +133,33 @@ def build_phase_graph(phases: list[PhaseDef]) -> PhaseGraph:
         for source in source_stage:
             for target in target_stage:
                 add(source, target, "normal")
+    by_id = {phase.id: phase for phase in phases}
+    contract_edges: dict[tuple[str, str], set[str]] = {}
+    for consumer in phases:
+        dependencies = (
+            *consumer.inputs,
+            *consumer.synthesizes,
+            *consumer.against,
+            *consumer.reconciles,
+            *consumer.requires,
+        )
+        for dependency in dependencies:
+            producer = by_id.get(dependency)
+            if producer is None:
+                continue
+            sources = (
+                [f"{producer.id}.{audit.id}" for audit in producer.audits]
+                if producer.audits
+                else [producer.id]
+            )
+            for source in sources:
+                add(source, consumer.id, "normal")
+                if producer.produces_contract:
+                    contract_edges.setdefault((source, consumer.id), set()).add(
+                        producer.produces_contract
+                    )
     for gate in phases:
-        if not gate.gates or not gate.on_block:
+        if not gate.gates or (not gate.on_block and not gate.selective_on_block):
             continue
         # ``on_block`` is one back-edge. After taking it, execution follows the ordinary forward
         # edges until it reaches the gate again.
@@ -144,14 +170,16 @@ def build_phase_graph(phases: list[PhaseDef]) -> PhaseGraph:
     edges: list[PhaseGraphEdge] = []
     for edge_source, edge_target in sorted(edge_kinds, key=lambda pair: (pair[0], pair[1])):
         kinds = edge_kinds[(edge_source, edge_target)]
-        edges.append(
-            {
+        edge: PhaseGraphEdge = {
                 "key": f"{edge_source}->{edge_target}",
                 "source": edge_source,
                 "target": edge_target,
                 "kinds": [kind for kind in ("normal", "retry") if kind in kinds],
             }
-        )
+        contracts = sorted(contract_edges.get((edge_source, edge_target), ()))
+        if contracts:
+            edge["contracts"] = contracts
+        edges.append(edge)
     return {"nodes": nodes, "edges": edges, "groups": groups}
 
 

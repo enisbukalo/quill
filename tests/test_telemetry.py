@@ -77,7 +77,7 @@ def test_build_breakdown_returns_compact_ordered_phase_statistics(tmp_path: Path
         },
     )
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert list(result) == [
         "status",
         "run_id",
@@ -117,6 +117,10 @@ def test_build_breakdown_returns_compact_ordered_phase_statistics(tmp_path: Path
         "tool_calls_total": 1,
         "tool_calls_by_name": {"bash": 1},
         "transcripts": ["stream-impl-m-1.jsonl"],
+        "contract_kind": None,
+        "contract_version": None,
+        "contract_status": None,
+        "contract_digest": None,
     }
     assert result["cumulative_usage"] == {
         "context_tokens": 10,
@@ -222,7 +226,7 @@ def test_durable_event_history_is_authoritative_and_preserves_active_phase(tmp_p
         },
     )
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert [item["phase"] for item in result["phase_executions"]] == ["plan", "review_plan"]
     assert result["phase_executions"][0]["tool_calls_by_name"] == {"read": 2}
     assert result["phase_executions"][1]["verdict"] is None

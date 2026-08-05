@@ -13,18 +13,22 @@ import pytest
 from quill import engine
 from quill.blocker_memory import verified_memory_block
 from quill.config import AuditDef, PhaseDef, QuillfolioConfig
+from quill.contracts import default_catalog, load_contract
 from quill.findings import Finding, load_findings, merge_verification_findings
 from quill.git_ops import FeedbackItem, FeedbackSnapshot, PullRequest
 from quill.loader import ModelLoadError
 from quill.live_usage import LiveUsage
 from quill.phases import Outcome, PhaseResult
-from quill.runctx import PipelineDeps, RunContext
+from quill.runctx import CommandResult, PipelineDeps, RunContext, VerificationResult
 
 # The task line names the file the worker must write, e.g. "Write your artifact to plan.md."
 # Capture the whole filename token; the sentence's trailing period is stripped below.
 _ARTIFACT_RE = re.compile(
-    r"[Ww]rite (?:your artifact|your findings|the reconciled review) to (\S+\.(?:md|json))"
+    r"[Ww]rite (?:your artifact|your findings|your natural review notes|the reconciled review|"
+    r"the reconciled natural review notes) to (\S+\.(?:md|json))"
 )
+
+_PROJECTION_RE = re.compile(r"write one JSON payload to (\S+\.json)")
 
 
 class _FakeLoader:
@@ -512,6 +516,77 @@ def test_selective_research_gate_reruns_only_owned_lane_then_synthesis(tmp_path:
     assert calls.count("research_gate") == 2
     manifest = json.loads((ctx.run_dir / "parallel-research-manifest.json").read_text())
     assert manifest["lanes"]["technical"]["attempt"] == 2
+
+
+def test_direct_selective_research_gate_reruns_only_owned_lane_without_synthesis(
+    tmp_path: Path,
+) -> None:
+    lanes = [
+        PhaseDef(
+            id=name,
+            type="producer",
+            persona=f"{name}.md",
+            models=("qwen",),
+            artifact=f"{name}.md",
+            parallel_group="research",
+        )
+        for name in ("requirements", "architecture", "technical")
+    ]
+    gate = PhaseDef(
+        id="research_gate",
+        type="reviewer",
+        persona="gate.md",
+        models=("qwen",),
+        artifact="research-findings.json",
+        against=tuple(lane.id for lane in lanes),
+        gates=True,
+        structured_findings=True,
+        retry_budget=1,
+        selective_on_block=tuple(lane.id for lane in lanes),
+    )
+    config = _config(tmp_path, [*lanes, gate])
+
+    class DirectSpawn(_Spawn):
+        gate_calls = 0
+
+        def _maybe_write_artifact(self, agent: str, prompt: str, receipt: str) -> None:
+            if agent != "research_gate":
+                super()._maybe_write_artifact(agent, prompt, receipt)
+                return
+            self.gate_calls += 1
+            match = _ARTIFACT_RE.search(prompt)
+            assert match is not None
+            finding = {
+                "id": "T1",
+                "severity": "MAJOR",
+                "status": "OPEN" if self.gate_calls == 1 else "RESOLVED",
+                "title": "Technical evidence missing",
+                "requirement": "Verify the engine API",
+                "evidence": "technical.md lacks an API citation",
+                "failure_scenario": "Planning invents an unsupported API",
+                "required_outcome": "Cite the authoritative API",
+                "owner": "technical",
+            }
+            Path(match.group(1).rstrip(".")).write_text(
+                json.dumps({"schema_version": 1, "findings": [finding]}),
+                encoding="utf-8",
+            )
+
+    spawn = DirectSpawn(
+        {"research_gate": ["BLOCK: missing evidence", "PASS: evidence verified"]}
+    )
+    ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
+    ctx.deps.session_capacity = lambda _model: 3
+
+    final = engine.run_phases(ctx)
+
+    assert final["type"] == "run_done"
+    calls = [agent for agent, _model, _prompt in spawn.calls]
+    assert calls.count("requirements") == 1
+    assert calls.count("architecture") == 1
+    assert calls.count("technical") == 2
+    assert calls.count("research_gate") == 2
+    assert "research_synthesis" not in calls
 
 
 def test_selective_research_gate_replaces_multiple_then_remaining_blocked_lanes(
@@ -3398,3 +3473,458 @@ def test_structured_gate_self_check_runs_on_block_with_its_persona(tmp_path: Pat
     )
     assert "Your artifact for this phase is at" in prompts[0]
     assert _ev_types(ctx).count("self_check_started") == 1
+
+
+def _contract_producer() -> PhaseDef:
+    return PhaseDef(
+        id="plan",
+        type="producer",
+        persona="plan.md",
+        models=("gemma",),
+        artifact="plan.md",
+        self_check=True,
+        produces_contract="quill.plan/v1",
+    )
+
+
+def _valid_plan_payload() -> dict[str, object]:
+    return {
+        "summary": "Implement the requested behavior",
+        "decisions": ["Keep compatibility"],
+        "phases": ["Implement", "Verify"],
+        "evidence": ["plan.md#decision"],
+        "verification": ["Run focused and full tests"],
+        "unknowns": [],
+    }
+
+
+def test_contract_producer_is_schema_blind_until_projection_and_publishes(
+    tmp_path: Path,
+) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx.phase_checkpoints["plan"] = "c" * 40
+    continuations: list[tuple[str, float]] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        continuations.append((prompt, timeout))
+        if match := _PROJECTION_RE.search(prompt):
+            Path(match.group(1)).write_text(json.dumps(_valid_plan_payload()), encoding="utf-8")
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.DONE
+    assert result.contract_ref is not None
+    assert result.contract_ref == ctx.contracts["plan"]
+    initial_prompt = ctx.deps.spawn.calls[0][2]  # type: ignore[attr-defined]
+    assert "schema" not in initial_prompt.lower()
+    assert "machine-readable" not in initial_prompt.lower()
+    assert len(continuations) == 2
+    assert "schema" not in continuations[0][0].lower()
+    assert "machine-readable" not in continuations[0][0].lower()
+    assert ".contract-staging" not in continuations[0][0]
+    assert "final data projection" in continuations[1][0]
+    assert all(timeout == ctx.config.opencode_run_seconds for _prompt, timeout in continuations)
+    assert (ctx.run_dir / result.contract_ref.path).is_file()
+    assert (ctx.run_dir / "work" / "plan" / "attempt-1.md").read_text() == "artifact body"
+    contract = load_contract(
+        ctx.run_dir / result.contract_ref.path,
+        default_catalog(),
+        run_dir=ctx.run_dir,
+    )
+    assert contract.checkpoint == "c" * 40
+
+
+def test_mechanical_phase_publishes_exact_typed_command_evidence(tmp_path: Path) -> None:
+    phase = PhaseDef(
+        id="verify",
+        type="mechanical",
+        step="build_test",
+        produces_contract="quill.verification/v1",
+    )
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({}), _FakeLoader())
+    ctx.deps.build_test = lambda _config, selection: VerificationResult(
+        selection,
+        (
+            CommandResult(
+                "make",
+                0,
+                False,
+                False,
+                "2026-08-05T01:00:00+00:00",
+                "2026-08-05T01:00:01+00:00",
+                "build ok\n",
+            ),
+            CommandResult(
+                "make test",
+                None,
+                False,
+                True,
+                "2026-08-05T01:00:01+00:00",
+                "2026-08-05T01:00:03+00:00",
+                "test timed out\n",
+            ),
+        ),
+    )
+
+    result = engine._run_mechanical(ctx, phase)
+
+    assert result.outcome is Outcome.BLOCK
+    assert result.contract_ref is not None
+    contract = load_contract(
+        ctx.run_dir / result.contract_ref.path,
+        default_catalog(),
+        run_dir=ctx.run_dir,
+    )
+    commands = contract.payload["commands"]  # type: ignore[index]
+    assert commands[0]["command"] == "make"
+    assert commands[0]["exit_code"] == 0
+    assert commands[1]["exit_code"] == -1
+    assert commands[1]["timed_out"] is True
+    for command in commands:
+        log = ctx.run_dir / command["log"]
+        assert log.is_file()
+        assert len(command["log_sha256"]) == 64
+    assert _ev_types(ctx).count("contract_validated") == 1
+    assert _ev_types(ctx).count("contract_published") == 1
+
+
+def test_unavailable_mechanical_phase_publishes_unavailable_not_pass(tmp_path: Path) -> None:
+    phase = PhaseDef(
+        id="verify",
+        type="mechanical",
+        step="build_test",
+        produces_contract="quill.verification/v1",
+    )
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({}), _FakeLoader())
+
+    result = engine._run_mechanical(ctx, phase)
+
+    assert result.outcome is Outcome.FAILED
+    assert result.contract_ref is not None
+    contract = load_contract(
+        ctx.run_dir / result.contract_ref.path,
+        default_catalog(),
+        run_dir=ctx.run_dir,
+    )
+    assert contract.contract_status.value == "UNAVAILABLE"
+    assert contract.payload == {"selection": "build_test", "commands": []}
+
+
+def test_contract_self_check_without_continuation_support_fails_closed(tmp_path: Path) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.GARBAGE
+    assert "requires same-session continuation" in result.message
+    assert not (ctx.run_dir / "contracts").exists()
+
+
+def test_projection_cannot_mutate_frozen_natural_artifact(tmp_path: Path) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        if match := _PROJECTION_RE.search(prompt):
+            Path(match.group(1)).write_text(json.dumps(_valid_plan_payload()), encoding="utf-8")
+            (ctx.run_dir / "plan.md").write_text("unauthorized mutation", encoding="utf-8")
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.GARBAGE
+    assert "modified its frozen source artifact" in result.message
+    assert not (ctx.run_dir / "contracts").exists()
+
+
+def test_failed_projection_continuation_still_rejects_repository_mutation(tmp_path: Path) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        if _PROJECTION_RE.search(prompt):
+            (ctx.run_dir / "plan.md").write_text("mutated before crash", encoding="utf-8")
+            return "CRASH: projection failed"
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.GARBAGE
+    assert "modified its frozen source artifact" in result.message
+    assert not (ctx.run_dir / "contracts").exists()
+
+
+def test_invalid_projection_gets_bounded_projection_only_repair(tmp_path: Path) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    projection_prompts: list[str] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        match = _PROJECTION_RE.search(prompt)
+        if match:
+            projection_prompts.append(prompt)
+            Path(match.group(1)).write_text("{broken", encoding="utf-8")
+        elif "Projection repair" in prompt:
+            projection_prompts.append(prompt)
+            staging = ctx.run_dir / ".contract-staging" / "plan" / "attempt-1.json"
+            staging.write_text(json.dumps(_valid_plan_payload()), encoding="utf-8")
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.DONE
+    assert result.contract_ref is not None
+    assert len(projection_prompts) == 2
+    assert "Edit only that staging JSON" in projection_prompts[1]
+    assert "do not research" in projection_prompts[1]
+
+
+def test_incomplete_projection_retries_natural_work_without_revealing_schema(
+    tmp_path: Path,
+) -> None:
+    phase = _contract_producer()
+    config = replace(_config(tmp_path, [phase]), retries={"spawn": 1})
+    spawn = _Spawn({"plan": ["DONE: first", "DONE: second"]})
+    ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
+    projection_count = 0
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        nonlocal projection_count
+        if match := _PROJECTION_RE.search(prompt):
+            projection_count += 1
+            payload: object = (
+                {
+                    "contract_status": "INCOMPLETE",
+                    "missing": [
+                        {
+                            "field": "verification",
+                            "reason": "no verification was selected",
+                            "evidence": "plan.md:1",
+                        }
+                    ],
+                }
+                if projection_count == 1
+                else _valid_plan_payload()
+            )
+            Path(match.group(1)).write_text(json.dumps(payload), encoding="utf-8")
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_phase(ctx, phase)
+
+    assert result.outcome is Outcome.DONE
+    assert result.contract_ref is not None
+    assert len(spawn.calls) == 2
+    assert "SEMANTIC CORRECTION REQUIRED" in spawn.calls[1][2]
+    assert "verification" in spawn.calls[1][2]
+    assert "schema" not in spawn.calls[1][2].lower()
+    assert not (ctx.run_dir / "contracts" / "plan" / "attempt-1.json").exists()
+    assert (ctx.run_dir / "contracts" / "plan" / "attempt-2.json").is_file()
+
+
+def test_delivery_projection_exposes_only_semantics_and_binds_observed_identity(
+    tmp_path: Path,
+) -> None:
+    phase = PhaseDef(
+        id="commit",
+        type="producer",
+        persona="commit.md",
+        models=("gemma",),
+        artifact="delivery.md",
+        self_check=True,
+        produces_contract="quill.delivery/v1",
+    )
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"commit": "DONE: delivered"}), _FakeLoader())
+    ctx.branch = "feature/ticket-33"
+
+    class DeliveryGit:
+        def pr_for_branch(self, branch: str) -> PullRequest | None:
+            assert branch == "feature/ticket-33"
+            return PullRequest(7, branch, "Ticket 33", "https://example.test/pr/7")
+
+        def pr_for_ticket(self, ticket: int) -> PullRequest | None:
+            raise AssertionError(f"branch lookup should resolve before ticket {ticket}")
+
+        def local_head_sha(self) -> str:
+            return "abc123"
+
+        def pr_head_sha(self, pr_number: int) -> str:
+            assert pr_number == 7
+            return "abc123"
+
+        def workspace_status(self) -> str:
+            return ""
+
+    ctx.deps.git = DeliveryGit()  # type: ignore[assignment]
+    projections: list[str] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        if match := _PROJECTION_RE.search(prompt):
+            projections.append(prompt)
+            Path(match.group(1)).write_text(
+                json.dumps({"summary": "Delivered ticket 33", "unresolved": []}),
+                encoding="utf-8",
+            )
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.DONE
+    assert result.contract_ref is not None
+    assert len(projections) == 1
+    assert "local_sha" not in projections[0]
+    assert "remote_sha" not in projections[0]
+    contract = load_contract(
+        ctx.run_dir / result.contract_ref.path,
+        default_catalog(),
+        run_dir=ctx.run_dir,
+    )
+    assert contract.payload == {
+        "summary": "Delivered ticket 33",
+        "unresolved": [],
+        "branch": "feature/ticket-33",
+        "local_sha": "abc123",
+        "remote_sha": "abc123",
+        "pr": 7,
+        "pr_url": "https://example.test/pr/7",
+        "clean": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("remote_sha", "workspace", "pr_branch", "message"),
+    [
+        ("def456", "", "feature/ticket-33", "identity mismatch"),
+        ("abc123", " M changed.py", "feature/ticket-33", "worktree dirty"),
+        ("abc123", "", "feature/different", "branch mismatch"),
+    ],
+)
+def test_delivery_projection_rejects_unverified_identity(
+    tmp_path: Path,
+    remote_sha: str,
+    workspace: str,
+    pr_branch: str,
+    message: str,
+) -> None:
+    phase = PhaseDef(
+        id="commit",
+        type="producer",
+        persona="commit.md",
+        models=("gemma",),
+        artifact="delivery.md",
+        self_check=True,
+        produces_contract="quill.delivery/v1",
+    )
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"commit": "DONE: delivered"}), _FakeLoader())
+    ctx.branch = "feature/ticket-33"
+
+    class DeliveryGit:
+        def pr_for_branch(self, branch: str) -> PullRequest | None:
+            return PullRequest(7, pr_branch, "Ticket 33", "https://example.test/pr/7")
+
+        def pr_for_ticket(self, ticket: int) -> PullRequest | None:
+            return None
+
+        def local_head_sha(self) -> str:
+            return "abc123"
+
+        def pr_head_sha(self, pr_number: int) -> str:
+            return remote_sha
+
+        def workspace_status(self) -> str:
+            return workspace
+
+    ctx.deps.git = DeliveryGit()  # type: ignore[assignment]
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        if match := _PROJECTION_RE.search(prompt):
+            Path(match.group(1)).write_text(
+                json.dumps({"summary": "Delivered ticket 33", "unresolved": []}),
+                encoding="utf-8",
+            )
+        return "DONE: complete"
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.GARBAGE
+    assert message in result.message
+    assert not (ctx.run_dir / "contracts" / "commit").exists()

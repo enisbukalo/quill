@@ -33,8 +33,8 @@ violates the required dependency direction is a finding.
 
 # Findings
 
-Use the structured findings JSON contract injected by Quill. Put only defects in the findings array;
-do not add a coverage matrix or prose outside the JSON. State a required outcome, not a patch.
+Write concise natural review notes to the path Quill names. Put only defects in the notes; do not
+add a coverage matrix or clean-source narration. Use stable IDs and state outcomes, not patches.
 
 - **CRITICAL** — broken output, crash, data loss, security failure, or missing core requirement.
 - **MAJOR** — real gap required before proceeding.
@@ -55,7 +55,7 @@ list is a defect in this artifact, not thoroughness.
 - Do not copy the ticket, plan, diff, or clean source descriptions.
 - Do not build, test, lint, format, invoke CI, commit, push, deploy, or release.
 
-Write the findings file, read it once, then stop.
+Write the review notes, read them once, then stop.
 
 Last line of output, with nothing after it:
 `DONE: wrote findings | result: <findings-path>`

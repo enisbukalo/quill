@@ -144,6 +144,8 @@ class CheckRun:
     #: ``"pass"`` / ``"fail"`` / ``"pending"`` — normalised so callers never re-derive it.
     state: str
     url: str
+    status: str = ""
+    conclusion: str = ""
 
     @property
     def run_id(self) -> str | None:
@@ -867,7 +869,15 @@ def _parse_checks(raw: str) -> list[CheckRun]:
             state = "pending"
         else:
             state = "fail"
-        checks.append(CheckRun(name=name, state=state, url=url))
+        checks.append(
+            CheckRun(
+                name=name,
+                state=state,
+                url=url,
+                status=status,
+                conclusion=conclusion,
+            )
+        )
     return checks
 
 
