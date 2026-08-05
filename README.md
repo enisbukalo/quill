@@ -1,5 +1,12 @@
 # quill
 
+[![CI](https://github.com/enisbukalo/quill/actions/workflows/ci.yml/badge.svg)](https://github.com/enisbukalo/quill/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/enisbukalo/quill)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://docs.python.org/3.12/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![MCP](https://img.shields.io/badge/MCP-1.27%2B-7C3AED.svg)](https://modelcontextprotocol.io/)
+[![Stars](https://img.shields.io/github/stars/enisbukalo/quill?style=flat)](https://github.com/enisbukalo/quill/stargazers)
+
 Generic, code-driven software-dev pipeline for local LLMs, with a
 FastAPI backend for live observability and control.
 
