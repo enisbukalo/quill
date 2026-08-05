@@ -125,6 +125,40 @@ class _RunControls:
     cancel_active: Callable[[], None] | None = None
 
 
+@dataclass(slots=True)
+class _LiveUsageAttribution:
+    """Keep phase-cumulative usage separate from the active execution's usage."""
+
+    inherited: dict[str, LiveUsage]
+    phase_usage: dict[str, LiveUsage] = field(init=False)
+    active_execution_usage: dict[str, LiveUsage] = field(default_factory=dict)
+    execution_baselines: dict[str, LiveUsage] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.phase_usage = dict(self.inherited)
+
+    def start_execution(self, phase: str) -> None:
+        self.execution_baselines[phase] = self.phase_usage.get(phase, LiveUsage())
+        self.active_execution_usage[phase] = LiveUsage()
+
+    def update(self, phase: str, snapshot: LiveUsage) -> None:
+        inherited = self.inherited.get(phase, LiveUsage())
+        cumulative = LiveUsage(
+            inherited.input_tokens + snapshot.input_tokens,
+            inherited.output_tokens + snapshot.output_tokens,
+            inherited.context_window_tokens + snapshot.context_window_tokens,
+        )
+        # A progress snapshot is cumulative for this phase, including earlier retries. The
+        # execution baseline is captured by PHASE_STARTED so the table row remains attempt-local.
+        baseline = self.execution_baselines.get(phase, inherited)
+        self.phase_usage[phase] = cumulative
+        self.active_execution_usage[phase] = LiveUsage(
+            max(0, cumulative.input_tokens - baseline.input_tokens),
+            max(0, cumulative.output_tokens - baseline.output_tokens),
+            max(0, cumulative.context_window_tokens - baseline.context_window_tokens),
+        )
+
+
 class RunManager:
     """Executes one queued run: workspace → config → deps → pipeline."""
 
@@ -420,8 +454,9 @@ class RunManager:
                         for name, count in raw_tools.items():
                             if isinstance(name, str) and isinstance(count, int):
                                 phase_tools[name] = phase_tools.get(name, 0) + count
-            live_phase_usage = dict(inherited_phase_usage)
-            active_execution_usage: dict[str, LiveUsage] = {}
+            usage_attribution = _LiveUsageAttribution(inherited_phase_usage)
+            live_phase_usage = usage_attribution.phase_usage
+            active_execution_usage = usage_attribution.active_execution_usage
             live_phase_tools = {
                 phase: dict(tools) for phase, tools in inherited_phase_tools.items()
             }
@@ -520,7 +555,7 @@ class RunManager:
                 event_phase = event.get("phase")
                 if event.get("type") == events.PHASE_STARTED and isinstance(event_phase, str):
                     with live_lock:
-                        active_execution_usage[event_phase] = LiveUsage()
+                        usage_attribution.start_execution(event_phase)
                 if event.get("type") == events.RUN_FAILED:
                     raw_reason = event.get("reason")
                     raw_phase = event.get("phase")
@@ -589,13 +624,7 @@ class RunManager:
             def on_usage_progress(phase: str, snapshot: LiveUsage, _stream_path: Path) -> None:
                 nonlocal live_tokens
                 with live_lock:
-                    active_execution_usage[phase] = snapshot
-                    baseline = inherited_phase_usage.get(phase, LiveUsage())
-                    live_phase_usage[phase] = LiveUsage(
-                        baseline.input_tokens + snapshot.input_tokens,
-                        baseline.output_tokens + snapshot.output_tokens,
-                        baseline.context_window_tokens + snapshot.context_window_tokens,
-                    )
+                    usage_attribution.update(phase, snapshot)
                     live_tokens = LiveUsage(
                         sum(item.input_tokens for item in live_phase_usage.values()),
                         sum(item.output_tokens for item in live_phase_usage.values()),
