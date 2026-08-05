@@ -40,7 +40,7 @@ import {
   selfLoopLayout,
 } from "./phase-graph.mjs";
 import { reconcileModelOverrides } from "./run-model-overrides.mjs";
-import { linearTrend } from "./trends.mjs";
+import { linearTrend, sparklineLeftMargin } from "./trends.mjs";
 
 const main = document.querySelector("#main");
 const toastRegion = document.querySelector("#toast-region");
@@ -1612,8 +1612,6 @@ function applyResourceGauge(gauge, reading) {
   const fanPercent = Number.isFinite(fan) ? Math.max(0, Math.min(100, fan)) : null;
   gauge.style.setProperty("--fan-load", fanPercent === null ? "0" : String(fanPercent));
   const gpuIndex = Number.isFinite(Number(reading.index)) ? Number(reading.index) : 0;
-  const fanHue = isCpu ? 185 : (315 + gpuIndex * 47) % 360;
-  gauge.style.setProperty("--fan-color", `hsl(${fanHue} 95% 60%)`);
   const fanText = formatPercent(reading.fan_percent);
   const fanWell = gauge.querySelector(".gauge-fan .gauge-horizontal-well");
   gauge.querySelector(".gauge-fan .gauge-value").textContent = fanText;
@@ -1890,8 +1888,14 @@ function sparkline(label, yAxisLabel, points, field, formatter) {
   const values = points.map((item) => Math.max(0, Number(item[field]) || 0));
   const maximum = Math.max(...values, 1);
   const width = 560;
-  const height = 190;
-  const plot = { left: 68, right: 548, top: 12, bottom: 150 };
+  const height = 172;
+  const yTicks = [maximum, maximum / 2, 0].map((value) => [value, formatter(value)]);
+  const plot = {
+    left: sparklineLeftMargin(yTicks.map(([, text]) => text)),
+    right: 548,
+    top: 12,
+    bottom: 145,
+  };
   const coordinates = values.map((value, index) => {
     const x = values.length === 1
       ? (plot.left + plot.right) / 2
@@ -1904,29 +1908,18 @@ function sparkline(label, yAxisLabel, points, field, formatter) {
     role: "img",
     "aria-label": `${label}: ${yAxisLabel} by completed run, oldest to newest`,
   });
-  for (const value of [maximum, maximum / 2, 0]) {
+  for (const [value, text] of yTicks) {
     const y = plot.bottom - (value / maximum) * (plot.bottom - plot.top);
     const tick = svgElement("text", { x: plot.left - 8, y: y + 4, class: "sparkline-tick", "text-anchor": "end" });
-    tick.textContent = formatter(value);
+    tick.textContent = text;
     append(svg, svgElement("line", { x1: plot.left, x2: plot.right, y1: y, y2: y, class: "sparkline-grid-line" }), tick);
   }
-  const yTitle = svgElement("text", {
-    x: 14,
-    y: (plot.top + plot.bottom) / 2,
-    class: "sparkline-axis-title",
-    transform: `rotate(-90 14 ${(plot.top + plot.bottom) / 2})`,
-    "text-anchor": "middle",
-  });
-  yTitle.textContent = yAxisLabel;
-  const xTitle = svgElement("text", { x: (plot.left + plot.right) / 2, y: height - 3, class: "sparkline-axis-title", "text-anchor": "middle" });
-  xTitle.textContent = "Completed runs (oldest → newest)";
-  append(svg, yTitle, xTitle);
-  const xTicks = values.length === 1 ? [[coordinates[0][0], "Run 1"]] : [
-    [plot.left, "Run 1"],
-    [plot.right, `Run ${values.length}`],
+  const xTicks = values.length === 1 ? [[coordinates[0][0], "Run 1", "middle"]] : [
+    [plot.left, "Run 1", "start"],
+    [plot.right, `Run ${values.length}`, "end"],
   ];
-  for (const [x, text] of xTicks) {
-    const tick = svgElement("text", { x, y: plot.bottom + 17, class: "sparkline-tick", "text-anchor": "middle" });
+  for (const [x, text, anchor] of xTicks) {
+    const tick = svgElement("text", { x, y: plot.bottom + 17, class: "sparkline-tick", "text-anchor": anchor });
     tick.textContent = text;
     append(svg, svgElement("line", { x1: x, x2: x, y1: plot.bottom, y2: plot.bottom + 4, class: "sparkline-axis" }), tick);
   }

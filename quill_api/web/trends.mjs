@@ -15,3 +15,8 @@ export function linearTrend(values) {
   const slope = denominator ? numerator / denominator : 0;
   return series.map((_, index) => Math.max(0, mean + slope * (index - midpoint)));
 }
+
+export function sparklineLeftMargin(labels) {
+  const longest = Math.max(0, ...(labels || []).map((label) => String(label).length));
+  return Math.max(28, Math.min(96, longest * 6 + 12));
+}

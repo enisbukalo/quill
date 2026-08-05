@@ -56,7 +56,7 @@ import {
   selfLoopLayout,
 } from "../../quill_api/web/phase-graph.mjs";
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
-import { linearTrend } from "../../quill_api/web/trends.mjs";
+import { linearTrend, sparklineLeftMargin } from "../../quill_api/web/trends.mjs";
 
 test("run trend uses a least-squares line and never projects below zero", () => {
   assert.deepEqual(linearTrend([]), []);
@@ -66,6 +66,12 @@ test("run trend uses a least-squares line and never projects below zero", () => 
   assert.ok(Math.abs(descending[0] - 28.3333) < 0.001);
   assert.ok(Math.abs(descending[1] - 13.3333) < 0.001);
   assert.equal(descending[2], 0);
+});
+
+test("run trend reserves only the width required by its visible y-axis values", () => {
+  assert.equal(sparklineLeftMargin(["0", "50", "100"]), 30);
+  assert.equal(sparklineLeftMargin(["0s", "6h 17m 28s", "12h 34m 56s"]), 78);
+  assert.equal(sparklineLeftMargin(["x".repeat(100)]), 96);
 });
 
 test("workflow refresh preserves valid run model overrides", () => {
@@ -641,9 +647,11 @@ test("telemetry UI uses persisted scales and horizontal in-bar readings", async 
   assert.match(app, /const memoryHue = memoryPercent === null \? 120 : 120 \* \(1 - memoryPercent \/ 100\)/);
   assert.match(styles, /\.gauge-memory \{[^}]*linear-gradient\(to right, var\(--green\) 0%, var\(--amber\) 55%, var\(--red\) 100%\)/);
   assert.match(styles, /\.gauge-temperature \{ --bar-color: var\(--temperature-color, var\(--green\)\)/);
-  assert.match(styles, /\.gauge-fan \{ --bar-color: var\(--fan-color\)/);
+  assert.match(styles, /\.gauge-fan \{ --bar-color: var\(--cyan\); --bar-end: var\(--violet\)/);
   assert.match(app, /--fan-load/);
-  assert.match(app, /const fanHue = isCpu \? 185 : \(315 \+ gpuIndex \* 47\) % 360/);
+  assert.doesNotMatch(app, /fanHue|--fan-color/);
+  assert.match(styles, /\.gauge-label \{[^}]*height: 2\.5em;[^}]*overflow: hidden/);
+  assert.match(styles, /\.gauge-label > span \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap/);
   assert.match(app, /const temperatureHue = 120 \* \(1 - temperatureLoad \/ 100\)/);
   assert.match(styles, /clip-path: inset\(0 calc\(100% - var\(--bar-load\) \* 1%\) 0 0\)/);
 });
@@ -1248,6 +1256,8 @@ test("pulse, graph, and top-level section spacing keep their compact structural 
   const app = await readFile(new URL("../../quill_api/web/app.mjs", import.meta.url), "utf8");
   const styles = await readFile(new URL("../../quill_api/web/styles.css", import.meta.url), "utf8");
   assert.match(styles, /main \{[^}]*display: grid;[^}]*gap: 1rem;/);
+  assert.match(styles, /\.scanlines \{[^}]*z-index: 20;/);
+  assert.match(styles, /\.panel \{[^}]*z-index: 21;/);
   assert.doesNotMatch(styles, /\.page-header \{[^}]*margin-bottom/);
   assert.match(styles, /\.run-pulse \{[^}]*grid-template-columns: 116px minmax\(0, 1fr\);/);
   assert.match(styles, /\.run-pulse-stack \{[^}]*display: grid;[^}]*gap: 1rem;/);
@@ -1744,7 +1754,10 @@ test("queue navigation, grouped selection, SSE, and overview snapshot are wired"
   assert.match(styles, /\.stats-trends \{ grid-column: 1 \/ -1; \}/);
   assert.match(styles, /\.stats-project-queue \{ grid-column: span 3; \}/);
   assert.match(styles, /\.trend-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(app, /Completed runs \(oldest → newest\)/);
+  assert.doesNotMatch(app, /sparkline-axis-title|Completed runs \(oldest → newest\)/);
+  assert.match(app, /left: sparklineLeftMargin\(yTicks\.map/);
+  assert.match(app, /\[plot\.left, "Run 1", "start"\]/);
+  assert.match(app, /\[plot\.right, `Run \$\{values\.length\}`, "end"\]/);
   assert.match(app, /linearTrend\(values\)/);
   assert.match(styles, /\.sparkline-trend \{[^}]*stroke-dasharray:/);
 });

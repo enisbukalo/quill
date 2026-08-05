@@ -152,6 +152,7 @@ h3 { font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-s
 
 .panel {
   position: relative;
+  z-index: 21;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -234,8 +235,7 @@ h3 { font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-s
 .sparkline-area { fill: rgba(155,108,255,.1); }
 .sparkline-axis, .sparkline-grid-line { stroke: rgba(197,190,224,.3); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .sparkline-grid-line { stroke: rgba(197,190,224,.12); }
-.sparkline-tick, .sparkline-axis-title { fill: var(--muted); font: 10px ui-monospace, monospace; }
-.sparkline-axis-title { font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.sparkline-tick { fill: var(--muted); font: 10px ui-monospace, monospace; }
 .sparkline-line { fill: none; stroke: var(--cyan); stroke-width: 2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(69,239,255,.4)); }
 .sparkline-trend { fill: none; stroke: var(--magenta); stroke-width: 2; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; }
 .sparkline-dot { fill: var(--violet); stroke: var(--panel-solid); stroke-width: 1.5; }
@@ -438,13 +438,14 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .vllm-throughput-label { color: var(--muted); font-size: .44rem; letter-spacing: .1em; }
 .vllm-throughput-value { color: var(--cyan); font-size: .68rem; white-space: nowrap; }
 .resource-gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); align-items: stretch; gap: .75rem; width: 100%; min-width: 0; padding: .2rem; }
-.resource-gauge { --load: 0; --memory-load: 0; --temperature-load: 0; --fan-load: 0; --fan-color: var(--violet); display: grid; grid-template-rows: auto 1fr; gap: .55rem; min-width: 0; padding: .7rem .8rem; border: 1px solid rgba(69,239,255,.28); border-radius: 8px; color: var(--cyan); background: rgba(69,239,255,.035); font: 700 .62rem ui-monospace, monospace; }
+.resource-gauge { --load: 0; --memory-load: 0; --temperature-load: 0; --fan-load: 0; display: grid; grid-template-rows: auto 1fr; gap: .55rem; min-width: 0; padding: .7rem .8rem; border: 1px solid rgba(69,239,255,.28); border-radius: 8px; color: var(--cyan); background: rgba(69,239,255,.035); font: 700 .62rem ui-monospace, monospace; }
 .resource-gauge[data-gauge^="gpu"] { color: var(--magenta); border-color: rgba(255,75,216,.3); background: rgba(255,75,216,.035); }
-.gauge-header { position: relative; min-height: 2.1em; padding-inline: 3.6rem; }
+.gauge-header { position: relative; min-height: 2.5em; padding-inline: 3.6rem; }
 .gauge-vendor-slot { position: absolute; top: 0; left: 0; z-index: 1; }
 .hardware-vendor { display: block; width: auto; max-width: 62px; height: 28px; object-fit: contain; object-position: left center; }
 .hardware-vendor[data-vendor="amd"] { max-width: 74px; }
-.gauge-label { display: flex; flex-direction: column; min-height: 2.1em; justify-content: center; text-align: center; letter-spacing: .055em; line-height: 1.25; overflow-wrap: anywhere; }
+.gauge-label { display: flex; flex-direction: column; height: 2.5em; justify-content: center; overflow: hidden; text-align: center; letter-spacing: .055em; line-height: 1.25; }
+.gauge-label > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gauge-bars { display: grid; gap: .42rem; width: 100%; }
 .gauge-metric { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: .45rem; }
 .gauge-metric-label { color: var(--muted); font-size: .48rem; letter-spacing: .08em; }
@@ -454,7 +455,7 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .gauge-load { --bar-color: var(--cyan); --bar-end: var(--violet); --bar-load: var(--load); }
 .gauge-memory { --bar-color: var(--memory-color, var(--green)); --bar-load: var(--memory-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }
 .gauge-temperature { --bar-color: var(--temperature-color, var(--green)); --bar-load: var(--temperature-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }
-.gauge-fan { --bar-color: var(--fan-color); --bar-end: color-mix(in srgb, var(--fan-color) 62%, white); --bar-load: var(--fan-load); }
+.gauge-fan { --bar-color: var(--cyan); --bar-end: var(--violet); --bar-load: var(--fan-load); }
 .telemetry-empty { color: var(--muted); font-size: .55rem; align-self: center; max-width: 9rem; }
 .settings-form { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: .8rem; align-items: end; max-width: 760px; }
 .settings-form .button { justify-self: start; }
