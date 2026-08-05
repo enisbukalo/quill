@@ -823,10 +823,13 @@ class History:
 
         now = time.time() if created_at is None else created_at
         with Session(self._engine) as session:
-            existing = session.scalar(
-                select(ProjectQueueBatchRow).where(ProjectQueueBatchRow.batch_id == batch_id)
-            )
-            if existing is not None:
+
+            def existing_batch() -> ProjectQueueBatch | None:
+                existing = session.scalar(
+                    select(ProjectQueueBatchRow).where(ProjectQueueBatchRow.batch_id == batch_id)
+                )
+                if existing is None:
+                    return None
                 existing_items = list(
                     session.scalars(
                         select(ProjectQueueItemRow)
@@ -852,6 +855,9 @@ class History:
                     raise ValueError(f"project queue batch {batch_id!r} already has different data")
                 return _project_queue_batch(existing)
 
+            if existing := existing_batch():
+                return existing
+
             duplicate = session.scalar(
                 select(ProjectQueueItemRow).where(
                     ProjectQueueItemRow.repo == repo,
@@ -860,6 +866,13 @@ class History:
                 )
             )
             if duplicate is not None:
+                if duplicate.batch_id == batch_id:
+                    # Another connection committed this identical request between our initial
+                    # batch lookup and active-ticket lookup. End the stale read transaction and
+                    # validate the winner using a fresh SQLite snapshot.
+                    session.rollback()
+                    if existing := existing_batch():
+                        return existing
                 raise ValueError(
                     f"{repo}#{duplicate.ticket} is already active in project queue batch "
                     f"{duplicate.batch_id}"
@@ -903,33 +916,8 @@ class History:
                 session.commit()
             except IntegrityError as exc:
                 session.rollback()
-                existing = session.scalar(
-                    select(ProjectQueueBatchRow).where(ProjectQueueBatchRow.batch_id == batch_id)
-                )
-                if existing is not None and existing.repo == repo and existing.source == source:
-                    existing_items = list(
-                        session.scalars(
-                            select(ProjectQueueItemRow)
-                            .where(ProjectQueueItemRow.batch_id == batch_id)
-                            .order_by(ProjectQueueItemRow.position)
-                        )
-                    )
-                    actual = [
-                        (
-                            item.ticket,
-                            item.project_owner,
-                            item.project_title,
-                            item.project_item_id,
-                            item.title,
-                            item.branch,
-                            item.epic_number,
-                            item.epic_title,
-                            item.workflow,
-                        )
-                        for item in existing_items
-                    ]
-                    if actual == expected:
-                        return _project_queue_batch(existing)
+                if existing := existing_batch():
+                    return existing
                 raise ValueError("project queue batch conflicts with active durable state") from exc
             return _project_queue_batch(batch)
 

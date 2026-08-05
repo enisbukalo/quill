@@ -635,6 +635,7 @@ class CpuTelemetryInfo(BaseModel):
     memory_used_mb: float | None = None
     memory_total_mb: float | None = None
     name: str | None = None
+    fan_percent: float | None = None
 
 
 class GpuTelemetryInfo(BaseModel):
@@ -645,6 +646,7 @@ class GpuTelemetryInfo(BaseModel):
     memory_used_mb: float | None = None
     memory_total_mb: float | None = None
     sampled_at: float | None = None
+    fan_percent: float | None = None
 
 
 class VllmThroughputTelemetryInfo(BaseModel):

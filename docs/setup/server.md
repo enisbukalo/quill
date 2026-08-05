@@ -162,6 +162,10 @@ GH_TOKEN=
 QUILL_WEB_ROOT=/home/YOU/.local/share/quill/web/current
 # Backend CPU/GPU sampling cadence (8 samples/second by default).
 QUILL_TELEMETRY_INTERVAL_SECONDS=0.125
+# Optional CPU fan command gauge. Use the stable hwmon driver name and PWM channel, not the
+# boot-dependent /sys/class/hwmon/hwmonN directory number.
+QUILL_CPU_FAN_HWMON_NAME=nct6779
+QUILL_CPU_FAN_PWM_CHANNEL=3
 # Machine-level vLLM controls used by the Models page. The service user needs passwordless sudo
 # for start and stop on each discovered model unit.
 QUILL_VLLM_SWITCH_COMMAND=sudo systemctl start

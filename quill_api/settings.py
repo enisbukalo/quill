@@ -55,6 +55,10 @@ class Settings:
     git_author_name: str = DEFAULT_GIT_AUTHOR_NAME
     git_author_email: str = DEFAULT_GIT_AUTHOR_EMAIL
     telemetry_interval_s: float = 0.125
+    #: Optional hwmon controller/channel whose 0..255 PWM output represents the CPU fan command.
+    #: The driver name remains stable even when Linux renumbers ``hwmonN`` after a reboot.
+    cpu_fan_hwmon_name: str | None = None
+    cpu_fan_pwm_channel: int | None = None
     pr_watch_enabled: bool = True
     pr_watch_interval_s: float = 15.0
     pr_feedback_loop_enabled: bool = True
@@ -103,6 +107,10 @@ class Settings:
             telemetry_interval_s=_float(
                 source.get("QUILL_TELEMETRY_INTERVAL_SECONDS"), 0.125, 0.125, 10.0
             ),
+            cpu_fan_hwmon_name=(source.get("QUILL_CPU_FAN_HWMON_NAME") or "").strip() or None,
+            cpu_fan_pwm_channel=_optional_bounded_int(
+                source.get("QUILL_CPU_FAN_PWM_CHANNEL"), 1, 32
+            ),
             pr_watch_enabled=_bool(source.get("QUILL_PR_WATCH_ENABLED"), True),
             pr_watch_interval_s=_float(
                 source.get("QUILL_PR_WATCH_INTERVAL_SECONDS"), 15.0, 5.0, 3600.0
@@ -148,6 +156,16 @@ def _int(value: str | None, default: int) -> int:
 
 def _bounded_int(value: str | None, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, _int(value, default)))
+
+
+def _optional_bounded_int(value: str | None, minimum: int, maximum: int) -> int | None:
+    if not value:
+        return None
+    try:
+        result = int(value)
+    except ValueError:
+        return None
+    return max(minimum, min(maximum, result))
 
 
 def _float(value: str | None, default: float, minimum: float, maximum: float) -> float:

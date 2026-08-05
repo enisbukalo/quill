@@ -28,6 +28,7 @@ class CpuTelemetry:
     memory_used_mb: float | None = None
     memory_total_mb: float | None = None
     name: str | None = None
+    fan_percent: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,7 @@ class GpuTelemetry:
     memory_used_mb: float | None = None
     memory_total_mb: float | None = None
     sampled_at: float | None = None
+    fan_percent: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,9 +230,19 @@ class VllmThroughputSampler:
 class LinuxTelemetryReader:
     """Read Linux CPU counters/sensors and NVIDIA metrics without blocking request handlers."""
 
-    def __init__(self, vllm: VllmThroughputSampler) -> None:
+    def __init__(
+        self,
+        vllm: VllmThroughputSampler,
+        *,
+        cpu_fan_hwmon_name: str | None = None,
+        cpu_fan_pwm_channel: int | None = None,
+        hwmon_root: Path = Path("/sys/class/hwmon"),
+    ) -> None:
         self._previous_cpu: tuple[int, int] | None = None
         self._cpu_name = self._read_cpu_name()
+        self._cpu_fan_hwmon_name = cpu_fan_hwmon_name
+        self._cpu_fan_pwm_channel = cpu_fan_pwm_channel
+        self._hwmon_root = hwmon_root
         self._nvml: Any = None
         self._last_fallback = 0.0
         self._fallback_gpus: tuple[GpuTelemetry, ...] = ()
@@ -260,7 +272,13 @@ class LinuxTelemetryReader:
         temperature = self._cpu_temperature()
         return SystemTelemetrySnapshot(
             sampled_at=now,
-            cpu=CpuTelemetry(self._cpu_load(), temperature, *self._memory(), self._cpu_name),
+            cpu=CpuTelemetry(
+                self._cpu_load(),
+                temperature,
+                *self._memory(),
+                self._cpu_name,
+                fan_percent=self._cpu_fan_percent(),
+            ),
             gpus=self._gpus(now),
             vllm=self._vllm.sample(),
         )
@@ -296,7 +314,7 @@ class LinuxTelemetryReader:
 
     def _cpu_temperature(self) -> float | None:
         candidates: list[tuple[int, Path]] = []
-        for root in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        for root in sorted(self._hwmon_root.glob("hwmon*")):
             try:
                 name = (root / "name").read_text(encoding="utf-8").strip()
             except OSError:
@@ -329,6 +347,28 @@ class LinuxTelemetryReader:
                     return self._sensor_value(root / "temp")
             except OSError:
                 continue
+        return None
+
+    def _cpu_fan_percent(self) -> float | None:
+        """Read the configured motherboard PWM output as a percentage.
+
+        The kernel's ``hwmonN`` number is not stable across boots, so locate the controller by its
+        driver name every time rather than retaining a numbered sysfs path.
+        """
+        if self._cpu_fan_hwmon_name is None or self._cpu_fan_pwm_channel is None:
+            return None
+        for root in sorted(self._hwmon_root.glob("hwmon*")):
+            try:
+                name = (root / "name").read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if name != self._cpu_fan_hwmon_name:
+                continue
+            try:
+                pwm = int((root / f"pwm{self._cpu_fan_pwm_channel}").read_text().strip())
+            except (OSError, ValueError):
+                return None
+            return round(pwm * 100.0 / 255.0, 1) if 0 <= pwm <= 255 else None
         return None
 
     @staticmethod
@@ -378,6 +418,7 @@ class LinuxTelemetryReader:
                             memory_used_mb=round(memory.used / 1024 / 1024, 1),
                             memory_total_mb=round(memory.total / 1024 / 1024, 1),
                             sampled_at=now,
+                            fan_percent=self._nvml_fan_percent(handle),
                         )
                     )
                 return tuple(result)
@@ -389,7 +430,7 @@ class LinuxTelemetryReader:
         try:
             command = [
                 "nvidia-smi",
-                "--query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total",
+                "--query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total,fan.speed",
                 "--format=csv,noheader,nounits",
             ]
             output = subprocess.run(
@@ -397,7 +438,7 @@ class LinuxTelemetryReader:
             ).stdout
             rows = []
             for row in csv.reader(output.splitlines()):
-                if len(row) < 6:
+                if len(row) < 7:
                     continue
                 rows.append(
                     GpuTelemetry(
@@ -408,12 +449,21 @@ class LinuxTelemetryReader:
                         _number(row[4]),
                         _number(row[5]),
                         now,
+                        _number(row[6]),
                     )
                 )
             self._fallback_gpus = tuple(sorted(rows, key=lambda gpu: gpu.index))
         except (OSError, subprocess.SubprocessError, ValueError):
             self._fallback_gpus = ()
         return self._fallback_gpus
+
+    def _nvml_fan_percent(self, handle: object) -> float | None:
+        """Return NVML's per-GPU fan percentage without failing the rest of the sample."""
+        try:
+            value = float(self._nvml.nvmlDeviceGetFanSpeed(handle))
+        except Exception:  # noqa: BLE001 - passive or unsupported cooling is a valid state
+            return None
+        return value if 0.0 <= value <= 100.0 else None
 
 
 class SystemTelemetryMonitor:

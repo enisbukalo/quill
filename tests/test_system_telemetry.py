@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -88,7 +89,91 @@ def test_snapshot_serializes_tuple_gpus_as_json_compatible_data() -> None:
         "memory_used_mb": 8192.0,
         "memory_total_mb": 32768.0,
         "name": None,
+        "fan_percent": None,
     }
+
+
+def test_reader_reports_configured_cpu_pwm_as_percent(tmp_path: Path) -> None:
+    controller = tmp_path / "hwmon7"
+    controller.mkdir()
+    (controller / "name").write_text("nct6779\n", encoding="utf-8")
+    (controller / "pwm3").write_text("128\n", encoding="utf-8")
+    reader = LinuxTelemetryReader(
+        VllmThroughputSampler("http://vllm.example:8000"),
+        cpu_fan_hwmon_name="nct6779",
+        cpu_fan_pwm_channel=3,
+        hwmon_root=tmp_path,
+    )
+
+    assert reader._cpu_fan_percent() == 50.2
+
+
+def test_cpu_fan_settings_are_optional_and_bounded(tmp_path: Path) -> None:
+    settings = Settings.from_env(
+        {
+            "QUILL_STATE_DIR": str(tmp_path),
+            "QUILL_VLLM_URL": "http://vllm.example:8000",
+            "QUILL_CPU_FAN_HWMON_NAME": "nct6779",
+            "QUILL_CPU_FAN_PWM_CHANNEL": "99",
+        }
+    )
+
+    assert settings.cpu_fan_hwmon_name == "nct6779"
+    assert settings.cpu_fan_pwm_channel == 32
+
+
+def test_gpu_fallback_reports_nvidia_smi_fan_percent(monkeypatch) -> None:
+    command_seen: list[str] = []
+
+    def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        command_seen.extend(command)
+        return subprocess.CompletedProcess(command, 0, "0, Example GPU, 25, 45, 1024, 8192, 37\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    reader = LinuxTelemetryReader(VllmThroughputSampler("http://vllm.example:8000"))
+
+    assert reader._gpus(10.0)[0].fan_percent == 37.0
+    assert "fan.speed" in command_seen[1]
+
+
+def test_unsupported_nvml_fan_does_not_hide_other_gpu_metrics() -> None:
+    class NvmlWithoutFan:
+        NVML_TEMPERATURE_GPU = 0
+
+        @staticmethod
+        def nvmlDeviceGetCount() -> int:
+            return 1
+
+        @staticmethod
+        def nvmlDeviceGetHandleByIndex(index: int) -> int:
+            return index
+
+        @staticmethod
+        def nvmlDeviceGetMemoryInfo(_handle: int) -> object:
+            return type("Memory", (), {"used": 1024**2, "total": 2 * 1024**2})()
+
+        @staticmethod
+        def nvmlDeviceGetName(_handle: int) -> str:
+            return "Passively Cooled GPU"
+
+        @staticmethod
+        def nvmlDeviceGetUtilizationRates(_handle: int) -> object:
+            return type("Utilization", (), {"gpu": 12})()
+
+        @staticmethod
+        def nvmlDeviceGetTemperature(_handle: int, _sensor: int) -> int:
+            return 40
+
+        @staticmethod
+        def nvmlDeviceGetFanSpeed(_handle: int) -> float:
+            raise RuntimeError("not supported")
+
+    reader = LinuxTelemetryReader(VllmThroughputSampler("http://vllm.example:8000"))
+    reader._nvml = NvmlWithoutFan()
+
+    gpu = reader._gpus(10.0)[0]
+    assert gpu.utilization_percent == 12.0
+    assert gpu.fan_percent is None
 
 
 def test_reader_reports_cpu_model_name(monkeypatch) -> None:

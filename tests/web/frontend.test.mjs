@@ -632,6 +632,7 @@ test("telemetry UI uses persisted scales and horizontal in-bar readings", async 
   assert.match(app, /gpu_temperature_max_c: 80/);
   assert.match(app, /Threadripper\\b/);
   assert.match(app, /gaugeMetric\("temperature", "TEMP"\)/);
+  assert.match(app, /gaugeMetric\("fan", "FAN"\)/);
   assert.match(app, /--temperature-load/);
   assert.match(styles, /\.gauge-horizontal-well/);
   assert.match(styles, /\.gauge-value[^}]*position: absolute/);
@@ -640,6 +641,9 @@ test("telemetry UI uses persisted scales and horizontal in-bar readings", async 
   assert.match(app, /const memoryHue = memoryPercent === null \? 120 : 120 \* \(1 - memoryPercent \/ 100\)/);
   assert.match(styles, /\.gauge-memory \{[^}]*linear-gradient\(to right, var\(--green\) 0%, var\(--amber\) 55%, var\(--red\) 100%\)/);
   assert.match(styles, /\.gauge-temperature \{ --bar-color: var\(--temperature-color, var\(--green\)\)/);
+  assert.match(styles, /\.gauge-fan \{ --bar-color: var\(--fan-color\)/);
+  assert.match(app, /--fan-load/);
+  assert.match(app, /const fanHue = isCpu \? 185 : \(315 \+ gpuIndex \* 47\) % 360/);
   assert.match(app, /const temperatureHue = 120 \* \(1 - temperatureLoad \/ 100\)/);
   assert.match(styles, /clip-path: inset\(0 calc\(100% - var\(--bar-load\) \* 1%\) 0 0\)/);
 });

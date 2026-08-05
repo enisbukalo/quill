@@ -77,7 +77,11 @@ class Services:
             stop_command=self.settings.vllm_stop_command,
         )
         self.telemetry = SystemTelemetryMonitor(
-            LinuxTelemetryReader(VllmThroughputSampler(self.settings.vllm_url)),
+            LinuxTelemetryReader(
+                VllmThroughputSampler(self.settings.vllm_url),
+                cpu_fan_hwmon_name=self.settings.cpu_fan_hwmon_name,
+                cpu_fan_pwm_channel=self.settings.cpu_fan_pwm_channel,
+            ),
             self.settings.telemetry_interval_s,
             switch_state=lambda: ModelSwitchTelemetry(**asdict(self.model_switcher.state)),
         )

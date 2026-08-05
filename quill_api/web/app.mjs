@@ -1527,7 +1527,13 @@ function resourceGauge(key, label, vendor = "") {
   gauge.dataset.gauge = key;
   const bars = element("div", "gauge-bars");
   const memoryKind = key === "cpu" ? "RAM" : "VRAM";
-  append(bars, gaugeMetric("load", "LOAD"), gaugeMetric("memory", memoryKind), gaugeMetric("temperature", "TEMP"));
+  append(
+    bars,
+    gaugeMetric("load", "LOAD"),
+    gaugeMetric("memory", memoryKind),
+    gaugeMetric("temperature", "TEMP"),
+    gaugeMetric("fan", "FAN"),
+  );
   const labelNode = element("span", "gauge-label");
   const vendorNode = element("span", "gauge-vendor-slot");
   setHardwareVendor(vendorNode, vendor);
@@ -1558,6 +1564,7 @@ function updateTelemetryGauges() {
 }
 
 function applyResourceGauge(gauge, reading) {
+  const isCpu = reading.key === "cpu";
   setHardwareVendor(gauge.querySelector(".gauge-vendor-slot"), hardwareVendor(reading.name, reading.key));
   setHardwareLabel(gauge.querySelector(".gauge-label"), hardwareLabel(reading));
   const load = Number(reading.utilization_percent);
@@ -1588,7 +1595,6 @@ function applyResourceGauge(gauge, reading) {
   memoryWell.title = memoryDescription;
   memoryWell.setAttribute("aria-label", memoryDescription);
   const temperature = Number(reading.temperature_c);
-  const isCpu = reading.key === "cpu";
   const minimum = Number(state.telemetrySettings?.[isCpu ? "cpu_temperature_min_c" : "gpu_temperature_min_c"]);
   const maximum = Number(state.telemetrySettings?.[isCpu ? "cpu_temperature_max_c" : "gpu_temperature_max_c"]);
   const temperatureLoad = Number.isFinite(temperature) && Number.isFinite(minimum)
@@ -1602,6 +1608,16 @@ function applyResourceGauge(gauge, reading) {
   const temperatureWell = gauge.querySelector(".gauge-temperature .gauge-horizontal-well");
   gauge.querySelector(".gauge-temperature .gauge-value").textContent = temperatureText;
   temperatureWell.setAttribute("aria-label", `${isCpu ? "CPU" : "GPU"} temperature ${temperatureText}; scale ${minimum} to ${maximum} degrees Celsius`);
+  const fan = Number(reading.fan_percent);
+  const fanPercent = Number.isFinite(fan) ? Math.max(0, Math.min(100, fan)) : null;
+  gauge.style.setProperty("--fan-load", fanPercent === null ? "0" : String(fanPercent));
+  const gpuIndex = Number.isFinite(Number(reading.index)) ? Number(reading.index) : 0;
+  const fanHue = isCpu ? 185 : (315 + gpuIndex * 47) % 360;
+  gauge.style.setProperty("--fan-color", `hsl(${fanHue} 95% 60%)`);
+  const fanText = formatPercent(reading.fan_percent);
+  const fanWell = gauge.querySelector(".gauge-fan .gauge-horizontal-well");
+  gauge.querySelector(".gauge-fan .gauge-value").textContent = fanText;
+  fanWell.setAttribute("aria-label", `${isCpu ? "CPU" : `GPU ${gpuIndex + 1}`} fan speed ${fanText}`);
 }
 
 function updateProgressRegions(runId) {
