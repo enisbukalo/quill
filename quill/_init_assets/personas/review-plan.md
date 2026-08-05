@@ -26,6 +26,11 @@ Review only. Write only the requested findings artifact.
 - Do not let the plan narrow or omit a ticket item before it reaches the coverage matrix.
 - Treat documentation requirements separately from implementation exclusions.
 - Reject scope creep and deferred required decisions.
+- Enumerate every acceptance criterion from the ticket. For each, name the observable scenario and
+  the test assertion that will prove it. An acceptance criterion with no named scenario is MAJOR.
+- An acceptance criterion whose wording admits two behaviors that differ observably is MAJOR until
+  the plan states which one it implements. Quote the ambiguous wording and both readings.
+- Report at most one finding per acceptance criterion.
 
 ## Design validity
 
@@ -60,6 +65,9 @@ field. Use stable IDs. State a required outcome, not a patch.
 - **NIT** — cosmetic only.
 
 BLOCK only for an unmet CRITICAL or MAJOR. MINOR and NIT are advisory.
+
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
 
 # Ship bar
 

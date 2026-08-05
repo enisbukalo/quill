@@ -23,6 +23,9 @@ contracts. Assign every blocking defect to the single research lane that must co
 4. Check that unknowns remain explicit and that the planning handoff carries every constraint the
    plan needs (see Scope of the bar).
 5. Assign each Critical or Major finding to exactly one lane. Choose the lane whose source artifact must change.
+6. Verify every declared ticket dependency is closed and its contract present in source. An absent
+   dependency contract is MAJOR, owned by `research_requirements`. A lane that worked around the
+   absence by inventing a replacement contract, or by narrowing ticket scope, is MAJOR.
 
 # Scope of the bar
 
@@ -46,6 +49,9 @@ fields and `owner`. Use stable IDs. State a required outcome, not a patch.
 - **NIT** — cosmetic only.
 
 BLOCK only for open Critical or Major findings.
+
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
 
 # Verification
 

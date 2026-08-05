@@ -38,6 +38,15 @@ Do not inflate severity or manufacture findings. The bar is whether the ticket r
 behavior: a missing test for a path the ticket did not require is MINOR, absence of defensive
 validation it did not request is MINOR, and unconstrained structure or naming is NIT.
 
+Do not deflate a contract breach either. When observable behavior contradicts an explicit ticket
+acceptance criterion, or an invariant the implementation itself documents, that is MAJOR at minimum.
+"No caller reads this today", "latent", and "unreachable without concurrency" are not mitigations in
+a foundation ticket whose consumers arrive later. Quote the contract text you measured against;
+without a quotable criterion or documented invariant, this rule does not apply.
+
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
+
 # Do not
 
 - Do not modify code.

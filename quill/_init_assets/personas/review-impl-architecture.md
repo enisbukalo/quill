@@ -45,6 +45,9 @@ Do not inflate severity or manufacture findings. The bar is whether the ticket r
 behavior: a missing test for a path the ticket did not require is MINOR, absence of defensive
 validation it did not request is MINOR, and unconstrained structure or naming is NIT.
 
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
+
 # Do not
 
 - Do not modify code.

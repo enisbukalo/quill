@@ -20,6 +20,15 @@ Use the structured findings JSON contract injected by Quill. Put only evidence-b
 MAJOR defects in the findings array; do not add prose outside the JSON. State an observable outcome,
 not speculative code.
 
+Do not deflate a contract breach. When observable behavior contradicts an explicit ticket acceptance
+criterion, or an invariant the implementation itself documents, that is MAJOR at minimum. "No caller
+reads this today", "latent", and "unreachable without concurrency" are not mitigations. Quote the
+contract text you measured against; without a quotable criterion or documented invariant, this rule
+does not apply.
+
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
+
 # Boundaries
 
 - Do not modify repository files, commit, push, or post GitHub comments.

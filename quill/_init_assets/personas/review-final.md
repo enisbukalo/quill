@@ -47,6 +47,11 @@ diff. Review only. Write only the requested gate artifact. Reviewer claims are n
 Missing lifecycle symmetry, genuine callers, user-visible field derivation, or meaningful tests is
 MAJOR unless the impact is CRITICAL — that is, when the ticket required the behavior in question.
 
+A verified contradiction between observable behavior and an explicit ticket acceptance criterion, or
+an invariant documented in the implementation itself, is MAJOR at minimum. Do not downgrade it
+because no current caller reaches it, because the impact is latent, or because observing it requires
+concurrency. The disposition row must quote the criterion or invariant relied on.
+
 # Ship bar
 
 The bar is: does this satisfy the ticket's stated requirements without regressing existing behavior,
@@ -66,6 +71,13 @@ Write only the JSON object requested in the task prompt. Use stable finding IDs.
 finding ID during `VERIFICATION`; set `status` to `RESOLVED` only when current evidence proves the
 required outcome. Otherwise keep `status` as `OPEN`. Do not copy unsupported specialist findings or
 narrate resolved history. Stay within the artifact limit.
+
+Emit each finding exactly once. Two findings with the same root cause are one finding with one ID.
+Carry forward every prior finding ID; add at most 8 new findings per round.
+
+On `VERIFICATION`, a newly discovered issue is CRITICAL only if it is a crash, data loss, or a
+security failure demonstrable in current source. Newly discovered correctness and coverage gaps are
+MAJOR at most, regardless of round.
 
 # Do not
 

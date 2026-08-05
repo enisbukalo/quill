@@ -20,6 +20,9 @@ Use the structured findings JSON contract injected by Quill. Put only evidence-b
 MAJOR defects in the findings array; do not add prose outside the JSON. State the required behavior,
 not a preferred patch.
 
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
+
 # Boundaries
 
 - Do not modify repository files, commit, push, or post GitHub comments.

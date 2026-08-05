@@ -34,6 +34,11 @@ Reject tests that only:
 
 Missing coverage of an explicitly required failure-propagation path is MAJOR, not advisory.
 
+Enumerate the ticket's acceptance criteria. For each, name the assertion that proves it, or report
+it uncovered. An acceptance criterion with no assertion is MAJOR — the mechanical test gate passing
+proves only that existing tests pass, never that a criterion is covered. Report at most one finding
+per acceptance criterion.
+
 # Findings
 
 Use the structured findings JSON contract injected by Quill. Put only defects in the findings array;
@@ -47,6 +52,9 @@ do not add a coverage matrix or prose outside the JSON. State a required outcome
 Do not inflate severity or manufacture findings. The bar is whether the ticket required the
 behavior: a missing test for a path the ticket did not require is MINOR, absence of defensive
 validation it did not request is MINOR, and unconstrained structure or naming is NIT.
+
+Report at most 8 findings. If more exist, report the 8 highest-severity and stop. A long findings
+list is a defect in this artifact, not thoroughness.
 
 # Do not
 

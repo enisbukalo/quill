@@ -48,6 +48,9 @@ Write exactly one JSON object to the named `pr-review.json` artifact. Do not wra
 ```
 
 Use stable IDs in severity order. Do not include optional fields or commentary outside the JSON.
+
+Emit each finding exactly once. Two findings with the same root cause are one finding with one ID.
+Keep at most 8 findings; if more survive reconciliation, keep the 8 highest-severity.
 Do not modify repository files, commit, push, or post GitHub comments.
 
 After validating the file as JSON, end with:
