@@ -987,6 +987,33 @@ def test_phase_self_check_is_opt_in_and_rejects_mechanical_phases(tmp_path: Path
         load_config(tmp_path)
 
 
+def test_self_check_may_name_a_persona_that_must_exist(tmp_path: Path) -> None:
+    body = _FILLED.replace('kind = "opencode"', 'kind = "pi"').replace(
+        'artifact = "plan.md"', 'artifact = "plan.md"\nself_check = "self-check-plan.md"'
+    )
+    _make_vault(tmp_path, body, (*_DEFAULT_PERSONAS, "self-check-plan.md"))
+    plan = load_config(tmp_path).phase("plan")
+    assert plan is not None
+    assert plan.self_check is True
+    assert plan.self_check_persona == "self-check-plan.md"
+
+    # `true` keeps the built-in prompt, so no persona is named.
+    plain = _FILLED.replace('kind = "opencode"', 'kind = "pi"').replace(
+        'artifact = "plan.md"', 'artifact = "plan.md"\nself_check = true'
+    )
+    _make_vault(tmp_path, plain, _DEFAULT_PERSONAS)
+    default_phase = load_config(tmp_path).phase("plan")
+    assert default_phase is not None
+    assert default_phase.self_check is True
+    assert default_phase.self_check_persona is None
+
+    # A named persona that is absent from the library is a config error, not a silent fallback.
+    _make_vault(tmp_path, body, _DEFAULT_PERSONAS)
+    (cfg.default_personas_root() / "self-check-plan.md").unlink()
+    with pytest.raises(ConfigInvalid, match="self_check persona 'self-check-plan.md'"):
+        load_config(tmp_path)
+
+
 def test_phase_set_hash_stable_and_sensitive(tmp_path: Path) -> None:
     _make_vault(tmp_path, _FILLED, _DEFAULT_PERSONAS)
     h1 = load_config(tmp_path).phase_set_hash()

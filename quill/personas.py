@@ -41,9 +41,19 @@ def load_persona(path: str | Path) -> str:
     ``name:``/``description:`` lines to the model would put a stray doc header at the top of every
     prompt.
     """
+    return PREAMBLE + "\n\n" + load_persona_body(path)
+
+
+def load_persona_body(path: str | Path) -> str:
+    """Return the persona body at ``path`` without :data:`PREAMBLE`.
+
+    Used for same-session continuations such as the self-check, where the worker already carries
+    the preamble from the phase's opening prompt. Repeating it would spend context restating a
+    contract the session is already under.
+    """
     p = Path(path)
     try:
         text = p.read_text(encoding="utf-8")
     except OSError as exc:
         raise PersonaNotFound(f"persona file not readable: {p} ({exc})") from exc
-    return PREAMBLE + "\n\n" + strip_frontmatter(text).strip()
+    return strip_frontmatter(text).strip()

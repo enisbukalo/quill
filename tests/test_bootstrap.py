@@ -66,6 +66,12 @@ def test_seed_personas_populates_an_empty_library(tmp_path: Path) -> None:
         "pr-review-correctness.md",
         "pr-review-architecture.md",
         "pr-review-final.md",
+        "self-check-findings.md",
+        "self-check-plan.md",
+        "self-check-pr-update.md",
+        "self-check-research-architecture.md",
+        "self-check-research-requirements.md",
+        "self-check-research-technical.md",
     }
     assert copied == len(shipped)
     assert {p.name for p in root.glob("*.md")} == shipped

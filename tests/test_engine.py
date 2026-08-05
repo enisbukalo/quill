@@ -3310,3 +3310,91 @@ def test_gating_verification_round_trips_a_status_delta(tmp_path: Path) -> None:
     prompt = spawn.calls[-1][2]
     assert '"dispositions"' in prompt
     assert "PRIOR BLOCKERS you must adjudicate" in prompt
+
+
+def test_structured_gate_self_check_runs_on_block_with_its_persona(tmp_path: Path) -> None:
+    """A gate that BLOCKs still re-verifies its findings before the workflow pays for a retry."""
+    producer = PhaseDef(
+        id="impl",
+        type="producer",
+        persona="impl.md",
+        models=("qwen",),
+        artifact="impl.md",
+    )
+    gate = PhaseDef(
+        id="review_impl_final",
+        type="reviewer",
+        persona="review-final.md",
+        models=("qwen",),
+        artifact="impl-findings.json",
+        against=("impl",),
+        gates=True,
+        structured_findings=True,
+        retry_budget=0,
+        on_block=("impl",),
+        self_check=True,
+        self_check_persona="self-check-findings.md",
+    )
+    config = _config(tmp_path, [producer, gate])
+    config.personas_root.mkdir(parents=True, exist_ok=True)
+    (config.personas_root / "self-check-findings.md").write_text(
+        "---\nname: self-check-findings\n---\nRe-open the file your evidence cites.",
+        encoding="utf-8",
+    )
+
+    class BlockingSpawn(_Spawn):
+        def _maybe_write_artifact(self, agent: str, prompt: str, receipt: str) -> None:
+            if agent != "review_impl_final":
+                super()._maybe_write_artifact(agent, prompt, receipt)
+                return
+            match = _ARTIFACT_RE.search(prompt)
+            assert match is not None
+            Path(match.group(1).rstrip(".")).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "findings": [
+                            {
+                                "id": "F1",
+                                "severity": "MAJOR",
+                                "status": "OPEN",
+                                "title": "test does not cover the split case",
+                                "requirement": "Ticket AC 1",
+                                "evidence": "test_production.gd:585",
+                                "failure_scenario": "regression ships",
+                                "required_outcome": "cover the split case",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    spawn = BlockingSpawn({"impl": "DONE: implemented", "review_impl_final": "BLOCK: F1 open"})
+    ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
+    prompts: list[str] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        prompts.append(prompt)
+        return "BLOCK: F1 still open"
+
+    ctx.deps.session_repair = repair
+    engine.run_phases(ctx)
+
+    assert len(prompts) == 1, "a blocking structured gate must still get its self-check"
+    assert "Re-open the file your evidence cites." in prompts[0]
+    assert "You are a headless worker" not in prompts[0], (
+        "continuation must not repeat the preamble"
+    )
+    assert "Your artifact for this phase is at" in prompts[0]
+    assert _ev_types(ctx).count("self_check_started") == 1

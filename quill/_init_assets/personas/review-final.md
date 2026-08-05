@@ -37,6 +37,9 @@ diff. Review only. Write only the requested gate artifact. Reviewer claims are n
   what they own.
 - Treat documentation obligations separately from implementation exclusions.
 - A class declaration, README statement, or plan assertion does not prove runtime integration.
+- A finding asserting that something is absent — a test that does not cover a case, a path never
+  exercised, an assertion not made — must quote the last line of the function, class, or file it
+  inspected. Without that quote the claim is unverified and the finding is inadmissible.
 
 # Severity
 

@@ -154,6 +154,9 @@ class PhaseDef:
     retry_budget: int | None = None
     max_artifact_chars: int | None = None  # hard handoff-size ceiling; repaired in-session
     self_check: bool = False  # one same-session completion audit after DONE/PASS
+    #: Persona file driving that audit. ``self_check = true`` uses the built-in generic prompt;
+    #: ``self_check = "self-check-plan.md"`` names a persona so the check is tuned per phase.
+    self_check_persona: str | None = None
     parallel_group: str | None = None  # consecutive producer phases executed concurrently
     #: Phases to re-run, in order, when this gate BLOCKs. A list because a revise is not always
     #: one phase: a CI gate must re-run `impl` to fix the code AND `commit` to push it, or the
@@ -502,7 +505,8 @@ def _parse_phase(entry: object, index: int) -> PhaseDef:
         structured_findings=entry.get("structured_findings") is True,
         retry_budget=retry_budget,
         max_artifact_chars=optional_positive_int("max_artifact_chars"),
-        self_check=entry.get("self_check") is True,
+        self_check=_self_check_enabled(entry.get("self_check")),
+        self_check_persona=_self_check_persona(entry.get("self_check")),
         parallel_group=(
             parallel_group.strip()
             if isinstance(parallel_group, str) and parallel_group.strip()
@@ -620,6 +624,15 @@ def _validate_phases(config: QuillfolioConfig) -> None:
         if ph.self_check and config.runner != "pi":
             raise ConfigInvalid(
                 f"phase '{ph.id}' enables self_check, which requires runner.kind = 'pi'."
+            )
+
+        if (
+            ph.self_check_persona is not None
+            and not config.persona_path(ph.self_check_persona).is_file()
+        ):
+            raise ConfigInvalid(
+                f"phase '{ph.id}' names self_check persona '{ph.self_check_persona}', "
+                "which does not exist in the persona library."
             )
 
         if ph.type == "mechanical":
@@ -808,6 +821,20 @@ def _validate_phases(config: QuillfolioConfig) -> None:
             raise ConfigInvalid(
                 f"phase '{ph.id}' enables structured_findings but is not a reviewer/finalizer."
             )
+
+
+def _self_check_enabled(value: object) -> bool:
+    """``true`` or a persona filename both enable the check; anything else disables it."""
+    if value is True:
+        return True
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _self_check_persona(value: object) -> str | None:
+    """The persona filename when ``self_check`` names one, else ``None`` for the generic prompt."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _require_persona_model(ph: PhaseDef, config: QuillfolioConfig) -> None:

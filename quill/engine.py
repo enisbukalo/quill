@@ -59,7 +59,7 @@ from quill.mechanical import (
     body_text_from,
     run_mechanical,
 )
-from quill.personas import load_persona
+from quill.personas import load_persona, load_persona_body
 from quill.phase_graph import build_phase_graph
 from quill.phases import (
     GateResult,
@@ -1286,7 +1286,10 @@ def _repair_artifact_failure(
         and structured_path.is_file()
         and structured_path.stat().st_size > 0
     ):
-        return result
+        # A valid structured artifact needs no receipt repair, but an opted-in phase still gets its
+        # self-check: the schema validator proves the JSON is well formed, never that a finding
+        # inside it survives contact with the source it cites.
+        return _self_check_phase(ctx, phase, model=model, artifact=artifact, result=result)
     checked = _require_artifact(ctx, result, artifact, max_chars=phase.max_artifact_chars)
     if checked.outcome is not Outcome.GARBAGE:
         return _self_check_phase(ctx, phase, model=model, artifact=artifact, result=checked)
@@ -1537,6 +1540,34 @@ def _self_fix_repaired(result: PhaseResult) -> bool:
     return result.outcome in (Outcome.DONE, Outcome.PASS, Outcome.BLOCK)
 
 
+#: A self-check runs after any verdict it could still improve. BLOCK is included so a gate can
+#: re-verify its own findings against source before the workflow pays for another producer round.
+_SELF_CHECK_OUTCOMES = (Outcome.DONE, Outcome.PASS, Outcome.BLOCK)
+
+
+def _self_check_prompt(ctx: RunContext, phase: PhaseDef, *, artifact: str) -> str:
+    """The continuation prompt for one self-check, from the phase's persona or the generic text.
+
+    The worker is already inside the phase's session, so neither variant restates the preamble or
+    the original task: it names the artifact and the standard the check is against.
+    """
+    location = (
+        f"Your artifact for this phase is at {ctx.artifact_path(artifact)}. This is the only "
+        "self-check iteration for this phase attempt. Correct the artifact or the repository work "
+        "directly, then emit the receipt line your original task requires."
+    )
+    if phase.self_check_persona is not None:
+        body = load_persona_body(ctx.config.persona_path(phase.self_check_persona))
+        return f"{body}\n\n{location}"
+    return (
+        "Run one bounded completion self-check. Re-read the ticket, your phase instructions, your "
+        "required skills, the current repository state, and your artifact. Check phase-contract "
+        "and skill conformance, factual accuracy, unsupported or invented claims, missed "
+        "requirements, and obvious correctness gaps. Do not broaden scope or repeat the "
+        f"independent review phase. {location}"
+    )
+
+
 def _self_check_phase(
     ctx: RunContext,
     phase: PhaseDef,
@@ -1546,7 +1577,7 @@ def _self_check_phase(
     result: PhaseResult,
 ) -> PhaseResult:
     """Run one non-gating completion-and-correction pass in the producer's Pi session."""
-    if not phase.self_check or result.outcome not in (Outcome.DONE, Outcome.PASS):
+    if not phase.self_check or result.outcome not in _SELF_CHECK_OUTCOMES:
         return result
     if ctx.deps.session_repair is None:
         return result
@@ -1554,16 +1585,7 @@ def _self_check_phase(
     label = phase.label or phase.id
     started = time.monotonic()
     _emit_event(ctx, events.self_check_started(phase.id, label))
-    prompt = (
-        "Perform one bounded final completion self-check in this same task context. Re-read the original "
-        "ticket, phase instructions, required skills, current repository state, and the artifact "
-        f"at {ctx.artifact_path(artifact)}. Check phase-contract and skill conformance, factual "
-        "accuracy, unsupported or invented claims, missed requirements, and obvious correctness "
-        "gaps. If you find an issue, correct the artifact or repository work directly now. This is "
-        "the only self-check iteration for this phase attempt. Do not broaden scope or repeat the "
-        "independent review phase. After inspecting and making any needed correction, emit the "
-        "original task's required DONE/PASS receipt."
-    )
+    prompt = _self_check_prompt(ctx, phase, artifact=artifact)
     checked = _repair_llm_session(ctx, phase, model=model, prompt=prompt)
     checked = _require_artifact(ctx, checked, artifact, max_chars=phase.max_artifact_chars)
     _emit_event(
