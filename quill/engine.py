@@ -1001,7 +1001,7 @@ def _gate(
             prior_findings = ()
     pending_memories = []
     if initial.outcome is Outcome.BLOCK:
-        pending = capture_blocker(ctx, phase.id, initial.message)
+        pending = capture_blocker(ctx, phase.id, initial.message, phase_type=phase.type)
         if pending is not None:
             pending_memories.append(pending)
 
@@ -1089,7 +1089,7 @@ def _gate(
                     prior_findings = load_findings(ctx.artifact_path(findings))
                 except ValueError:
                     pass
-            pending = capture_blocker(ctx, phase.id, result.message)
+            pending = capture_blocker(ctx, phase.id, result.message, phase_type=phase.type)
             if pending is not None:
                 pending_memories.append(pending)
         return result

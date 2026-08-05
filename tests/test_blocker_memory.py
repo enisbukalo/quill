@@ -107,7 +107,7 @@ def test_unresolved_blocker_is_archived_but_not_injected(tmp_path: Path) -> None
     assert verified_memory_block(ctx, "plan") == ""
 
 
-def test_verified_blocker_records_changed_files_and_injects_into_allowed_phases(
+def test_verified_blocker_records_changed_files_and_injects_into_routed_phases(
     tmp_path: Path,
 ) -> None:
     ctx = _ctx(tmp_path)
@@ -121,20 +121,12 @@ def test_verified_blocker_records_changed_files_and_injects_into_allowed_phases(
     assert events[-1]["event"] == "resolved"
     assert events[-1]["changed_files"] == ["tracked.txt"]
     for phase in (
-        "research",
-        "research_requirements",
-        "research_architecture",
-        "research_technical",
-        "research_synthesis",
-        "research_gate",
-        "plan",
-        "review_plan",
+        "impl",
+        "impl_finalize",
+        "review_impl_final",
         "review_impl.architecture",
         "review_impl.correctness",
         "review_impl.tests",
-        "impl_finalize",
-        "impl",
-        "review_impl_final",
     ):
         block = verified_memory_block(ctx, phase)
         assert "F1: invalid lifecycle callback" in block
@@ -144,6 +136,70 @@ def test_verified_blocker_records_changed_files_and_injects_into_allowed_phases(
     assert verified_memory_block(ctx, "build") == ""
     assert verified_memory_block(ctx, "ci") == ""
     assert verified_memory_block(ctx, "commit") == ""
+
+
+def test_lessons_only_reach_the_phases_that_can_avoid_reproducing_them(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    plan_gate = capture_blocker(ctx, "review_plan", "plan omitted an acceptance criterion")
+    impl_gate = capture_blocker(ctx, "review_impl_final", "implementation bypassed a contract")
+    research_gate = capture_blocker(ctx, "research_gate", "research asserted a nonexistent API")
+    assert plan_gate is not None and impl_gate is not None and research_gate is not None
+    resolve_blocker(ctx, plan_gate, verified_by="review_plan:PASS")
+    resolve_blocker(ctx, impl_gate, verified_by="review_impl_final:PASS")
+    resolve_blocker(ctx, research_gate, verified_by="research_gate:PASS")
+
+    planning = verified_memory_block(ctx, "plan")
+    implementing = verified_memory_block(ctx, "impl")
+    researching = verified_memory_block(ctx, "research_requirements")
+
+    assert "plan omitted an acceptance criterion" in planning
+    assert "implementation bypassed a contract" not in planning
+    assert "research asserted a nonexistent API" not in planning
+
+    assert "implementation bypassed a contract" in implementing
+    assert "plan omitted an acceptance criterion" not in implementing
+
+    assert "research asserted a nonexistent API" in researching
+    assert "plan omitted an acceptance criterion" not in researching
+
+
+def test_mechanical_gate_output_is_never_captured_as_memory(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+
+    assert (
+        capture_blocker(
+            ctx, "test", "$ ./build.sh --test\n... 3 problems found", phase_type="mechanical"
+        )
+        is None
+    )
+    assert capture_blocker(ctx, "build", "export failed", phase_type="mechanical") is None
+    assert count_memory_events(ctx.config.memory_root) == 0
+
+    reviewer = capture_blocker(ctx, "review_plan", "a real lesson", phase_type="reviewer")
+    assert reviewer is not None
+
+
+def test_injected_rows_are_capped_and_ranked_by_occurrences_then_recency(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    for index in range(12):
+        ctx.run_id = f"run-single-{index}"
+        pending = capture_blocker(ctx, "review_plan", f"one-off lesson {index}")
+        assert pending is not None
+        resolve_blocker(ctx, pending, verified_by="review_plan:PASS")
+    for run_id in ("run-repeat-a", "run-repeat-b"):
+        ctx.run_id = run_id
+        repeated = capture_blocker(ctx, "review_plan", "repeated lesson")
+        assert repeated is not None
+        resolve_blocker(ctx, repeated, verified_by="review_plan:PASS")
+
+    block = verified_memory_block(ctx, "plan")
+    rows = [line for line in block.splitlines() if line.startswith("- [")]
+
+    assert len(rows) == 8
+    assert "repeated lesson" in rows[0]
+    assert "verified occurrences: 2" in rows[0]
+    assert "one-off lesson 11" in rows[1]
+    assert "one-off lesson 0" not in block
 
 
 def test_memory_uses_one_repository_key_for_github_remote_forms(tmp_path: Path) -> None:
@@ -157,7 +213,7 @@ def test_memory_uses_one_repository_key_for_github_remote_forms(tmp_path: Path) 
         "git@github.com:me/project.git",
         "ssh://git@github.com/me/project.git",
     ):
-        block = verified_memory_block(_ctx(tmp_path, repo=repo), "research")
+        block = verified_memory_block(_ctx(tmp_path, repo=repo), "plan")
         assert "repository identity must be stable" in block
 
 
