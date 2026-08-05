@@ -1,4 +1,4 @@
-# quill
+# Quill
 
 [![CI](https://github.com/enisbukalo/quill/actions/workflows/ci.yml/badge.svg)](https://github.com/enisbukalo/quill/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/enisbukalo/quill)](LICENSE)
@@ -7,23 +7,42 @@
 [![MCP](https://img.shields.io/badge/MCP-1.27%2B-7C3AED.svg)](https://modelcontextprotocol.io/)
 [![Stars](https://img.shields.io/github/stars/enisbukalo/quill?style=flat)](https://github.com/enisbukalo/quill/stargazers)
 
-Generic, code-driven software-dev pipeline for local LLMs, with a
-FastAPI backend for live observability and control.
+Quill is a domain-specific **execution-graph engineering system** for LLM software delivery. It
+turns a repository's workflow definition into an executable graph whose agentic nodes research,
+plan, implement, review, and publish work while deterministic nodes enforce build, test, and CI
+policy. Models own judgment and code changes; Quill owns topology, evidence flow, scheduling,
+gates, retries, recovery, and durable state.
 
-A Python driver pulls a GitHub ticket and runs it end-to-end through a **data-driven phase
-engine** — phases are config + text, not code:
+A typical ticket graph looks like this:
 
 ```
 workspace prep → concurrent research → synthesis/gate → plan/gate → implement
-               → concurrent implementation audits/gate → test/build → PR
+               → test/build → concurrent implementation audits/gate → commit/push/PR
 ```
 
-Adding, removing, reordering, or renaming a phase is **config + a persona `.md`, zero driver
-code**. One run owns the model stack at a time. Its vLLM phases may use multiple concurrent Pi
-sessions up to the loaded model's advertised capacity. The driver owns the loop; models do the
-work; gates are enforced by code, and models produce judgment. All project-specific facts live in the target repo
-(`quillfolio.toml` + the personas it names), never in the driver — so the same driver
-ships any project.
+More precisely, Quill is a **workflow graph with agentic nodes**. The repository defines and
+versions the allowed routes in `quillfolio.toml`; persona and skill files independently define how
+each model-driven node works. The graph supports serial stages, bounded parallel fan-out, synthesis,
+evidence dependencies, mechanically authoritative gates, and retry back-edges. Quill validates a
+constrained software-delivery topology rather than accepting an arbitrary general-purpose graph,
+which keeps artifacts, traversal, and recovery predictable.
+
+This is execution-graph engineering, not knowledge-graph engineering or GraphRAG. Quill's graph
+represents what executes and under which conditions, not entities and semantic relationships used
+for retrieval. See the [architecture wiki](https://github.com/enisbukalo/quill/wiki/Architecture)
+for the complete graph model.
+
+Adding, removing, reordering, or renaming a phase is normally **configuration + persona text, zero
+driver code**. One run owns the model stack at a time, while compatible vLLM phases may use multiple
+concurrent Pi sessions up to live model capacity. The target repository selects its workflow graph,
+commands, personas, and skills; reusable persona and skill bodies live in configured libraries. The
+same engine can therefore ship unrelated projects.
+
+Quill supports two operating modes built on that engine:
+
+- `quill` runs locally against the current Git repository.
+- `quill-api` owns persistent server workspaces and exposes HTTP, SSE, a web control center, and
+  the stateless `quill-mcp` adapter.
 
 ## Quick Start
 
@@ -168,7 +187,8 @@ that the repo is a git repo with an `origin` remote and fails fast otherwise. Th
 
 ## Configuration
 
-`quill --init` creates `quillfolio.toml` at the repo root. The default pipeline looks like this:
+`quill --init` creates `quillfolio.toml` at the repo root. The starter configuration includes the
+following machine and policy settings before its named workflow graphs:
 
 ```toml
 [repo]
@@ -177,14 +197,14 @@ excluded_issue_labels = ["EPIC"] # omit matching issues from the web run form
 
 [runner]
 kind = "pi"               # REQUIRED: "pi" or "opencode"
-backend = "llamacpp"      # "llamacpp" (default) or "vllm"
+backend = "vllm"          # starter workflows use concurrent vLLM lanes
 
-[runner.vllm]
-command = ["sudo", "systemctl", "start"]
-
-[runner.vllm.models]
-Gemma4_31B_NVFP4 = "gemma431-nvfp4"
-Qwen3_32B_FP8 = "qwen32b-fp8"
+# Optional local-runner model service switching:
+# [runner.vllm]
+# command = ["sudo", "systemctl", "start"]
+#
+# [runner.vllm.models]
+# model-id = "service-name"
 
 [build]
 command = "cargo build"   # REQUIRED: your build command
@@ -355,8 +375,12 @@ the defaults below:
 
 | File | Role |
 |---|---|
-| `branch.md` | Create (or reuse) the working branch, learn repo naming conventions |
 | `research.md` | Investigate the ticket and repository before planning; write a bounded evidence handoff |
+| `research-requirements.md` | Trace ticket requirements, exclusions, current behavior, and observable outcomes |
+| `research-architecture.md` | Trace ownership, dependencies, state flow, and lifecycle constraints |
+| `research-technical.md` | Verify versioned external contracts and executable validation seams |
+| `research-synthesis.md` | Reconcile the current research lanes into one planning handoff |
+| `review-research.md` | Gate synthesized research and assign defects to their owning lane |
 | `plan.md` | Write an implementation plan with phased, self-contained steps |
 | `review-plan.md` | Judge the plan — severity-tagged findings, gate on CRITICAL/MAJOR |
 | `impl.md` | Apply a complete change from the plan, never build/test |
@@ -364,7 +388,13 @@ the defaults below:
 | `impl-integration.md` | Connect the core through callers, lifecycle, and persistence |
 | `impl-finalize.md` | Reconcile tests and returned review/build/CI findings across every layer |
 | `review-impl.md` | Independent review of the implementation against the plan |
+| `review-impl-architecture.md` | Audit ticket coverage, ownership, dependencies, and architecture |
+| `review-impl-correctness.md` | Audit production correctness and lifecycle behavior |
+| `review-impl-tests.md` | Audit behavioral tests and regression coverage |
 | `review-final.md` | Reconcile reviewer findings, apply gate rule |
+| `update-scope.md` | Convert active pull-request feedback into a bounded update scope |
+| `update-impl.md` | Implement every active feedback item on the existing pull-request branch |
+| `review-update.md` | Gate only the changes made after the captured feedback boundary |
 | `pr-review-requirements.md` | Audit ticket and acceptance-criteria coverage in an existing PR |
 | `pr-review-correctness.md` | Audit correctness, failure behavior, and regression risk |
 | `pr-review-architecture.md` | Audit repository architecture and integration contracts |
@@ -372,9 +402,9 @@ the defaults below:
 | `commit.md` | Commit, push, open (or update) the PR |
 
 To customize a persona, edit the `.md` file directly. To add a new one, create a new `.md` and
-reference it from a `[[phase]]` entry. Personas are shared by every repo on the machine; a repo
-picks which ones it wants by naming them (`persona = "impl-cpp.md"`), so improving one improves
-every pipeline that uses it.
+reference it from a `[[workflows.<id>.phase]]` entry. Personas are shared by every repo on the
+machine; a repo picks which ones it wants by naming them (`persona = "impl-cpp.md"`), so improving
+one improves every workflow that uses it.
 
 ## CLI Reference
 
@@ -449,6 +479,9 @@ Runs execute one at a time—the GPU is exclusive—and a manual second submissi
 while a run is queued, running, or awaiting a decision. Automatic PR reviews wait in the internal
 queue. See [docs/setup/server.md](docs/setup/server.md) for systemd, firewall rules, and how to
 let GitHub Actions do the building so the server needs no per-repo toolchain.
+
+The HTTP service currently has no application-layer authentication. Treat network reachability as
+an administrative security boundary and follow the deployment guide's firewall requirements.
 
 ### Web control center
 
@@ -614,7 +647,8 @@ quill/        driver package (loader, config, engine, mechanical, phases, person
               git_ops, pipeline, runstate_file, bootstrap, cli)
 quill/pi_extensions/  bundled Pi provider hooks loaded only by Quill-owned workers
 quill/_init_assets/   default quillfolio.toml + persona .md files (copied by --init)
-quill_api/    FastAPI service (app, routes, state, events, db, runner, packaged web SPA)
+quill_api/    FastAPI service (routers, state, events, persistence, runner, packaged web SPA)
+quill_mcp/    bounded stdio MCP adapter over the HTTP API
 tests/        unit tests
 tests/web/    dependency-free browser-module tests
 ```
@@ -624,8 +658,8 @@ tests/web/    dependency-free browser-module tests
 Full docs live in the **[project wiki](https://github.com/enisbukalo/quill/wiki)**:
 
 - **[Home](https://github.com/enisbukalo/quill/wiki/Home)** — overview + index
-- **[Architecture](https://github.com/enisbukalo/quill/wiki/Architecture)** — driver /
-  pipeline / `quill_api` layering, the pipeline callbacks, `RunState` + event bus
+- **[Architecture](https://github.com/enisbukalo/quill/wiki/Architecture)** — execution graph,
+  evidence edges, engine/API boundaries, persistence, restart, and security model
 - **[API Reference](https://github.com/enisbukalo/quill/wiki/API-Reference)** — the
   `quill-api` HTTP surface
 - **[Contributing](https://github.com/enisbukalo/quill/wiki/Contributing)** — dev setup,
@@ -636,19 +670,20 @@ Full docs live in the **[project wiki](https://github.com/enisbukalo/quill/wiki)
 Code-complete and exercised through live ticket, update, review, repair, merge, and CI workflows.
 CI gates lint, format, types, and tests:
 
-- **Driver** — `ModelLoader`, `quillfolio.toml` config + `--init` bootstrap,
-  receipt classifier, verified repository-scoped blocker memory, the data-driven phase `engine`
-  (producer / reviewer / finalizer / mechanical step types, declarative gates, capacity-aware
-  concurrent audit lanes, and optional same-session phase self-checks), git mechanics, update
-  mode (`--update`: re-run a ticket against its open PR's review feedback), and `run_pipeline`
-  behind the `quill` CLI, with a `gh` preflight.
-- **API** — multi-repository `quill_api` service with persistent server checkouts, FIFO execution,
-  event bus + SSE, SQLite run history, restart reconciliation, server-side persona/skill catalogs,
-  and the full human + developer-agent endpoint surface.
+- **Graph engine** — independently validated named workflows; producer, reviewer, finalizer, and
+  mechanical nodes; explicit evidence inputs; capacity-aware producer and audit fan-out;
+  synthesis; structured findings; convergent gates; selective lane repair; bounded self-fix and
+  self-check; verified blocker memory; and checkpoint-backed restart. `run_pipeline` serves both
+  the local CLI and API without coupling the driver to the web stack.
+- **API** — multi-repository `quill_api` service with persistent server checkouts, strict single-run
+  admission, append-only event history, SSE, SQLite projections and lifetime accounting, restart
+  reconciliation, durable FIFO project-ticket scheduling, PR feedback cycles, server-side
+  persona/skill catalogs, model controls, and the full human + developer-agent endpoint surface.
 - **Web control center** — packaged dark synthwave SPA with live Run Pulse, queue/run inspection,
-  breakdowns, artifacts, stop/decision controls, verified-memory management, expanded hardware
-  telemetry, and persona/skill editing. Run creation is available through the dashboard, CLI, MCP,
-  and API.
+  declared and traversed workflow graphs, breakdowns, artifacts, restart and stop/decision
+  controls, project-ticket queue, workspace and verified-memory management, hardware/model
+  telemetry, and persona/skill editing. Run creation is available through the dashboard, CLI,
+  MCP, and API.
 
 See [`docs/setup/server.md`](docs/setup/server.md) for installation, deployment, and operational
 verification.
