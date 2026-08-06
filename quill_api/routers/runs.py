@@ -10,7 +10,7 @@ import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -19,6 +19,8 @@ from quill import events
 from quill.checkpoints import CheckpointManifest, load_manifest
 from quill.eventlog import EventLog
 from quill.git_ops import GitError, SubprocessRunner
+from quill.phase_graph import PhaseGraph as DriverPhaseGraph
+from quill.phase_graph import route_counts
 from quill.pipeline import make_run_id
 from quill.preflight import gh_authenticated, gh_available
 from quill.telemetry import SCHEMA_VERSION, build_breakdown
@@ -313,6 +315,7 @@ def _historical_graph(
         return None, {}, {}, None, None
     graph: PhaseGraph | None = None
     sequence: list[str] = []
+    phase_retries: dict[str, int] = {}
     observed_nodes: dict[str, tuple[str, str]] = {}
     phase_durations: dict[str, float] = {}
     try:
@@ -334,6 +337,15 @@ def _historical_graph(
                         phase_type if isinstance(phase_type, str) else "phase",
                     ),
                 )
+            elif event.get("type") == events.RETRY:
+                scope = event.get("scope")
+                reason = event.get("reason")
+                phase = event.get("phase")
+                if (
+                    isinstance(phase, str)
+                    and (scope == "phase" or (scope is None and isinstance(reason, str)))
+                ):
+                    phase_retries[phase] = phase_retries.get(phase, 0) + 1
             if event.get("type") in {events.PHASE_DONE, events.GATE_VERDICT}:
                 phase = event.get("phase")
                 duration = event.get("duration_s")
@@ -371,12 +383,8 @@ def _historical_graph(
                 ],
             }
         )
-    counts = {edge.key: 0 for edge in graph.edges}
-    edge_keys = {(edge.source, edge.target): edge.key for edge in graph.edges}
-    for source, target in zip(sequence, sequence[1:], strict=False):
-        key = edge_keys.get((source, target))
-        if key is not None:
-            counts[key] += 1
+    graph_data = cast(DriverPhaseGraph, graph.model_dump(mode="python"))
+    counts = route_counts(graph_data, sequence, phase_retries=phase_retries)
     last_phase = sequence[-1] if sequence else None
     last_label = observed_nodes.get(last_phase, (last_phase, "phase"))[0] if last_phase else None
     return graph, counts, phase_durations, last_phase, last_label

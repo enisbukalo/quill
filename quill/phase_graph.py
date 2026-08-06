@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal, NotRequired, TypedDict
 
 from quill.config import PhaseDef
@@ -153,8 +154,11 @@ def build_phase_graph(phases: list[PhaseDef]) -> PhaseGraph:
                 else [producer.id]
             )
             for source in sources:
-                add(source, consumer.id, "normal")
-                if producer.produces_contract:
+                # Dependencies describe data handed to a later phase, not another execution
+                # route. Attach contract metadata only when the producer and consumer already
+                # share a declared control-flow edge; otherwise the UI would draw shortcuts that
+                # cross intermediate gates and imply they can be bypassed.
+                if (source, consumer.id) in edge_kinds and producer.produces_contract:
                     contract_edges.setdefault((source, consumer.id), set()).add(
                         producer.produces_contract
                     )
@@ -171,11 +175,11 @@ def build_phase_graph(phases: list[PhaseDef]) -> PhaseGraph:
     for edge_source, edge_target in sorted(edge_kinds, key=lambda pair: (pair[0], pair[1])):
         kinds = edge_kinds[(edge_source, edge_target)]
         edge: PhaseGraphEdge = {
-                "key": f"{edge_source}->{edge_target}",
-                "source": edge_source,
-                "target": edge_target,
-                "kinds": [kind for kind in ("normal", "retry") if kind in kinds],
-            }
+            "key": f"{edge_source}->{edge_target}",
+            "source": edge_source,
+            "target": edge_target,
+            "kinds": [kind for kind in ("normal", "retry") if kind in kinds],
+        }
         contracts = sorted(contract_edges.get((edge_source, edge_target), ()))
         if contracts:
             edge["contracts"] = contracts
@@ -183,7 +187,12 @@ def build_phase_graph(phases: list[PhaseDef]) -> PhaseGraph:
     return {"nodes": nodes, "edges": edges, "groups": groups}
 
 
-def route_counts(graph: PhaseGraph | None, sequence: list[str]) -> dict[str, int]:
+def route_counts(
+    graph: PhaseGraph | None,
+    sequence: list[str],
+    *,
+    phase_retries: Mapping[str, int] | None = None,
+) -> dict[str, int]:
     """Count only transitions that correspond to a declared directed route."""
     if graph is None:
         return {}
@@ -195,6 +204,7 @@ def route_counts(graph: PhaseGraph | None, sequence: list[str]) -> dict[str, int
             counts[key] += 1
     nodes = {node["id"]: node for node in graph["nodes"]}
     occurrences = {node_id: sequence.count(node_id) for node_id in nodes}
+    local_retries = phase_retries or {}
     # Concurrent audit starts are serialized in the event log but are horizontal in the declared
     # topology. Count their fan-in/fan-out routes from lane occurrences rather than false adjacency.
     for edge in graph["edges"]:
@@ -214,6 +224,12 @@ def route_counts(graph: PhaseGraph | None, sequence: list[str]) -> dict[str, int
             and target_node.get("group") is not None
         ):
             # Each grouped lane runs once on the normal path. Later occurrences are selective
-            # retries, even though concurrent event ordering cannot encode gate adjacency.
-            counts[edge["key"]] = max(0, occurrences[edge["target"]] - 1)
+            # gate retries, except for fresh local attempts explicitly recorded by the engine.
+            # Concurrent event ordering cannot encode either relationship by adjacency alone.
+            counts[edge["key"]] = max(
+                0,
+                occurrences[edge["target"]]
+                - 1
+                - max(0, local_retries.get(edge["target"], 0)),
+            )
     return counts

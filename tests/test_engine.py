@@ -3634,6 +3634,119 @@ def test_contract_self_check_without_continuation_support_fails_closed(tmp_path:
     assert not (ctx.run_dir / "contracts").exists()
 
 
+def test_contract_self_check_repairs_only_a_missing_receipt_without_restarting_phase(
+    tmp_path: Path,
+) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    prompts: list[str] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        prompts.append(prompt)
+        if match := _PROJECTION_RE.search(prompt):
+            Path(match.group(1)).write_text(json.dumps(_valid_plan_payload()), encoding="utf-8")
+            return "DONE: projected contract"
+        if "could not parse the terminal receipt" in prompt:
+            return "DONE: self-check complete"
+        return "Let me do one final verification pass on the artifact."
+
+    ctx.deps.session_repair = repair
+    final = engine.run_phases(ctx)
+
+    assert final["type"] == "run_done"
+    assert ctx.contracts["plan"].attempt == 1
+    assert ctx.phase_call_counts == {"plan": 1}
+    assert _ev_types(ctx).count("phase_started") == 1
+    assert _ev_types(ctx).count("retry") == 0
+    assert _events_of(ctx, "self_check_done")[0]["verdict"] == "DONE"
+    assert len(prompts) == 3
+    receipt_prompt = prompts[1]
+    assert "Do not call tools" in receipt_prompt
+    assert "repeat the self-check" in receipt_prompt
+    assert "exactly one receipt line" in receipt_prompt
+
+
+def test_contract_self_check_preserves_valid_work_when_receipt_repair_is_still_garbage(
+    tmp_path: Path,
+) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    prompts: list[str] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        prompts.append(prompt)
+        if match := _PROJECTION_RE.search(prompt):
+            Path(match.group(1)).write_text(json.dumps(_valid_plan_payload()), encoding="utf-8")
+            return "DONE: projected contract"
+        return "Still checking."
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.DONE
+    assert result.contract_ref is not None
+    assert result.contract_ref.attempt == 1
+    assert ctx.phase_call_counts == {"plan": 1}
+    assert _ev_types(ctx).count("retry") == 0
+    assert _events_of(ctx, "self_check_done")[0]["verdict"] == "GARBAGE"
+    assert len(prompts) == 3
+
+
+def test_contract_self_check_does_not_preserve_work_if_receipt_repair_removes_artifact(
+    tmp_path: Path,
+) -> None:
+    phase = _contract_producer()
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    calls = 0
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            ctx.artifact_path("plan.md").unlink()
+            return "DONE: self-check complete"
+        return "Still checking."
+
+    ctx.deps.session_repair = repair
+    result = engine._run_producer(ctx, phase)
+
+    assert result.outcome is Outcome.GARBAGE
+    assert "artifact 'plan.md' is missing" in result.message
+    assert result.contract_ref is None
+    assert calls == 2
+    assert not (ctx.run_dir / "contracts").exists()
+
+
 def test_projection_cannot_mutate_frozen_natural_artifact(tmp_path: Path) -> None:
     phase = _contract_producer()
     ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())

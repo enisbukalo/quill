@@ -34,6 +34,7 @@ def test_every_event_has_type_and_ts() -> None:
     for e in samples:
         assert isinstance(e["type"], str)
         assert isinstance(e["ts"], float)
+    assert samples[7]["scope"] == "phase"
 
 
 def test_none_payload_keys_dropped() -> None:
@@ -178,6 +179,81 @@ def test_fold_run_plan_stores_graph_and_projection_counts_reentry() -> None:
         "review.audit->impl": 1,
     }
     assert summary.phase_durations == {"impl": 2.5, "review.audit": 2.5}
+
+
+def test_fold_does_not_count_fresh_parallel_attempt_as_gate_retry() -> None:
+    graph: PhaseGraph = {
+        "nodes": [
+            {
+                "id": "requirements",
+                "label": "Requirements",
+                "type": "producer",
+                "order": 0,
+                "column": 0,
+                "lane": 0,
+                "group": "research",
+            },
+            {
+                "id": "technical",
+                "label": "Technical",
+                "type": "producer",
+                "order": 1,
+                "column": 0,
+                "lane": 1,
+                "group": "research",
+            },
+            {
+                "id": "research_gate",
+                "label": "Gate",
+                "type": "reviewer",
+                "order": 2,
+                "column": 1,
+                "lane": 0,
+            },
+        ],
+        "edges": [
+            {
+                "key": "requirements->research_gate",
+                "source": "requirements",
+                "target": "research_gate",
+                "kinds": ["normal"],
+            },
+            {
+                "key": "technical->research_gate",
+                "source": "technical",
+                "target": "research_gate",
+                "kinds": ["normal"],
+            },
+            {
+                "key": "research_gate->requirements",
+                "source": "research_gate",
+                "target": "requirements",
+                "kinds": ["retry"],
+            },
+            {
+                "key": "research_gate->technical",
+                "source": "research_gate",
+                "target": "technical",
+                "kinds": ["retry"],
+            },
+        ],
+    }
+    state = RunState(run_id="r1", ticket=42)
+    state.fold_event(events.run_plan("plan", phase_graph=graph))
+    for phase in ("requirements", "technical"):
+        state.fold_event(events.phase_started(phase, phase))
+        state.fold_event(events.phase_done(phase, phase))
+    state.fold_event(events.retry("requirements", 1, 1, scope="phase", reason="malformed"))
+    state.fold_event(events.phase_started("requirements", "requirements"))
+    state.fold_event(events.phase_done("requirements", "requirements"))
+    state.fold_event(events.phase_started("research_gate", "research gate"))
+
+    from quill_api.projections import run_summary
+
+    summary = run_summary(state, lambda _run_id: None)
+    assert state.phase_retry_counts == {"requirements": 1}
+    assert summary.phase_route_counts["research_gate->requirements"] == 0
+    assert summary.phase_route_counts["research_gate->technical"] == 0
 
 
 def test_fold_model_loading_separates_internal_activity_from_configured_phase() -> None:

@@ -87,6 +87,33 @@ test("phase graph preserves contract edges and latest validated attempt status",
   });
   assert.equal(normalizeContractState({ attempt: 0, state: "published" }), null);
 });
+
+test("phase graph hides historical data shortcuts across intermediate gates", () => {
+  const graph = normalizePhaseGraph({
+    phase_graph: {
+      nodes: [
+        { id: "research", label: "Research", order: 0, column: 0, lane: 0 },
+        { id: "research_gate", label: "Research gate", order: 1, column: 1, lane: 0 },
+        { id: "plan", label: "Plan", order: 2, column: 2, lane: 0 },
+      ],
+      edges: [
+        { source: "research", target: "research_gate", kinds: ["normal"] },
+        { source: "research_gate", target: "plan", kinds: ["normal"] },
+        {
+          source: "research",
+          target: "plan",
+          kinds: ["normal"],
+          contracts: ["quill.research.requirements/v1"],
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(graph.edges.map((edge) => edge.key), [
+    "research->research_gate",
+    "research_gate->plan",
+  ]);
+});
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
 import { linearTrend, sparklineLeftMargin } from "../../quill_api/web/trends.mjs";
 

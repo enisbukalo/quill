@@ -51,7 +51,11 @@ def run_summary(run: RunState, position: Callable[[str], int | None]) -> RunSumm
         phase_graph=PhaseGraph.model_validate(run.phase_graph)
         if run.phase_graph is not None
         else None,
-        phase_route_counts=route_counts(run.phase_graph, run.phase_sequence),
+        phase_route_counts=route_counts(
+            run.phase_graph,
+            run.phase_sequence,
+            phase_retries=run.phase_retry_counts,
+        ),
         phase_durations=phase_durations,
         model_loads=[
             ModelLoadInfo(

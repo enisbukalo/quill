@@ -121,6 +121,8 @@ class RunState:
     contract_states: dict[str, dict[str, object]] = field(default_factory=dict)
     #: Every configured phase entry, including retry-loop re-entry, in execution order.
     phase_sequence: list[str] = field(default_factory=list)
+    #: Fresh local attempts by phase, kept separate from gate-directed back-edge traversals.
+    phase_retry_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_active(self) -> bool:
@@ -289,6 +291,14 @@ class RunState:
         elif etype == events.RETRY:
             self.attempt = _as_int(event.get("attempt"), default=self.attempt)
             self.max_attempts = _as_int(event.get("max_attempts"), default=self.max_attempts)
+            scope = _as_str(event.get("scope"))
+            reason = _as_str(event.get("reason"))
+            # Older durable local-retry events predate ``scope`` but always carry the fresh-attempt
+            # reason; older gate retries carry neither. Preserve that distinction during replay.
+            if scope == "phase" or (scope is None and reason is not None):
+                phase = _as_str(event.get("phase"))
+                if phase is not None:
+                    self.phase_retry_counts[phase] = self.phase_retry_counts.get(phase, 0) + 1
 
         elif etype == events.NEEDS_DECISION:
             self.status = RunStatus.NEEDS_DECISION

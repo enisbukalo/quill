@@ -371,6 +371,7 @@ def _run_with_fresh_attempts(
                 phase.id,
                 attempt,
                 budget,
+                scope="phase",
                 reason=f"fresh phase attempt after {result.outcome.value}: {result.message}",
             ),
         )
@@ -1437,7 +1438,9 @@ def _gate(
 
     def revise(attempt: int) -> PhaseResult:
         ctx.gate_rounds_spent[phase.id] = spent + attempt
-        ctx.on_event(events.retry(phase.id, spent + attempt, configured))
+        ctx.on_event(
+            events.retry(phase.id, spent + attempt, configured, scope="gate")
+        )
         if gate_ref := ctx.contracts.get(phase.id):
             for target in (*phase.selective_on_block, *phase.on_block):
                 ctx.retry_contracts[target] = gate_ref
@@ -2089,6 +2092,27 @@ def _self_check_prompt(ctx: RunContext, phase: PhaseDef, *, artifact: str) -> st
     )
 
 
+def _self_check_receipt_repair_prompt(
+    ctx: RunContext,
+    phase: PhaseDef,
+    *,
+    artifact: str,
+    problem: str,
+) -> str:
+    """Request only the missing terminal receipt after completed self-check work."""
+    expected = (
+        "`PASS:`, `BLOCK:`, or `FAILED:`"
+        if phase.gates
+        else "`DONE:` or `FAILED:`"
+    )
+    return (
+        f"Quill could not parse the terminal receipt from your completed self-check: {problem}. "
+        f"The self-check artifact is mechanically present at {ctx.artifact_path(artifact)}. "
+        "Do not call tools, inspect files, edit anything, repeat the self-check, or add prose. "
+        f"Return exactly one receipt line beginning {expected}, using the original task grammar."
+    )
+
+
 def _self_check_phase(
     ctx: RunContext,
     phase: PhaseDef,
@@ -2115,12 +2139,46 @@ def _self_check_phase(
     prompt = _self_check_prompt(ctx, phase, artifact=artifact)
     checked = _repair_llm_session(ctx, phase, model=model, prompt=prompt)
     checked = _require_artifact(ctx, checked, artifact, max_chars=phase.max_artifact_chars)
+    observed = checked
+    if checked.outcome is Outcome.GARBAGE:
+        artifact_check = _require_artifact(
+            ctx,
+            PhaseResult(Outcome.DONE, raw_receipt=result.raw_receipt),
+            artifact,
+            max_chars=phase.max_artifact_chars,
+        )
+        if artifact_check.outcome is not Outcome.GARBAGE:
+            repaired = _repair_llm_session(
+                ctx,
+                phase,
+                model=model,
+                prompt=_self_check_receipt_repair_prompt(
+                    ctx,
+                    phase,
+                    artifact=artifact,
+                    problem=checked.message,
+                ),
+            )
+            artifact_check = _require_artifact(
+                ctx,
+                PhaseResult(Outcome.DONE, raw_receipt=repaired.raw_receipt),
+                artifact,
+                max_chars=phase.max_artifact_chars,
+            )
+            if artifact_check.outcome is Outcome.GARBAGE:
+                observed = checked = artifact_check
+            else:
+                observed = repaired
+                # The self-check already had its one semantic correction turn. A malformed or
+                # failed receipt-only response must not discard valid work or buy an entire fresh
+                # phase attempt. Preserve the original successful phase verdict in that case.
+                checked = repaired if repaired.outcome in _SELF_CHECK_OUTCOMES else result
     _emit_event(
         ctx,
         events.self_check_done(
             phase.id,
             label,
-            verdict=_verdict_of(checked),
+            verdict=_verdict_of(observed),
             duration_s=round(time.monotonic() - started, 2),
         ),
     )

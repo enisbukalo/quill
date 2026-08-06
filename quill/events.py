@@ -311,8 +311,23 @@ def gate_verdict(
     )
 
 
-def retry(phase: str, attempt: int, max_attempts: int, *, reason: str | None = None) -> Event:
-    return _event(RETRY, phase=phase, attempt=attempt, max_attempts=max_attempts, reason=reason)
+def retry(
+    phase: str,
+    attempt: int,
+    max_attempts: int,
+    *,
+    scope: Literal["phase", "gate"] = "phase",
+    reason: str | None = None,
+) -> Event:
+    """Record a retry without conflating local recovery with a gate back-edge."""
+    return _event(
+        RETRY,
+        phase=phase,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        scope=scope,
+        reason=reason,
+    )
 
 
 def needs_decision(question: str, *, phase: str | None = None) -> Event:

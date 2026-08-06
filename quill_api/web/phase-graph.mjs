@@ -101,18 +101,30 @@ export function normalizePhaseGraph(run) {
   const nodes = rawNodes.map((node) => ({ ...node, displayId: laneDisplayId(node) }));
   if (!nodes.length) return { nodes: [], edges: [], groups: [] };
   const ids = new Set(nodes.map((node) => node.id));
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const seen = new Set();
   const edges = [];
   for (const edge of graph.edges) {
     if (!edge || !ids.has(edge.source) || !ids.has(edge.target)) continue;
     const key = typeof edge.key === "string" ? edge.key : `${edge.source}->${edge.target}`;
     if (seen.has(key)) continue;
+    const sourceNode = nodesById.get(edge.source);
+    const targetNode = nodesById.get(edge.target);
+    const kinds = Array.isArray(edge.kinds)
+      ? edge.kinds.filter((kind) => ["normal", "retry"].includes(kind))
+      : [];
+    const visibleKinds = kinds.filter((kind) => (
+      kind === "retry" || targetNode.column === sourceNode.column + 1
+    ));
+    // Older run plans included data dependencies as normal graph routes. A dependency that jumps
+    // over an intermediate column is not executable flow and can visually pass through its gate.
+    if (!visibleKinds.length) continue;
     seen.add(key);
     edges.push({
       key,
       source: edge.source,
       target: edge.target,
-      kinds: Array.isArray(edge.kinds) ? edge.kinds.filter((kind) => ["normal", "retry"].includes(kind)) : [],
+      kinds: visibleKinds,
       contracts: Array.isArray(edge.contracts)
         ? edge.contracts.filter((contract) => typeof contract === "string" && contract.length > 0)
         : [],

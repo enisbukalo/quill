@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from quill import events
 from quill.config import AuditDef, PhaseDef
 from quill.phase_graph import build_phase_graph, route_counts
 from quill_api.routers.runs import _historical_graph, _historical_model_loads
@@ -45,6 +46,30 @@ def test_route_counts_repeated_declared_transitions_and_zero_routes() -> None:
         "review->impl": 1,
         "review->ship": 1,
     }
+
+
+def test_route_counts_do_not_present_local_parallel_retry_as_gate_back_edge() -> None:
+    graph = build_phase_graph(
+        [
+            PhaseDef(id="requirements", type="producer", parallel_group="research"),
+            PhaseDef(id="technical", type="producer", parallel_group="research"),
+            PhaseDef(
+                id="research_gate",
+                type="reviewer",
+                gates=True,
+                selective_on_block=("requirements", "technical"),
+            ),
+        ]
+    )
+
+    counts = route_counts(
+        graph,
+        ["requirements", "technical", "requirements", "research_gate"],
+        phase_retries={"requirements": 1},
+    )
+
+    assert counts["research_gate->requirements"] == 0
+    assert counts["research_gate->technical"] == 0
 
 
 def test_single_phase_has_no_fabricated_routes() -> None:
@@ -181,6 +206,51 @@ def test_direct_selective_gate_has_contract_forward_and_retry_edges() -> None:
     assert edges["research_gate->technical"]["kinds"] == ["retry"]
 
 
+def test_data_dependencies_do_not_draw_shortcuts_across_intermediate_gate() -> None:
+    phases = [
+        PhaseDef(
+            id="requirements",
+            type="producer",
+            parallel_group="research",
+            produces_contract="quill.research.requirements/v1",
+        ),
+        PhaseDef(
+            id="technical",
+            type="producer",
+            parallel_group="research",
+            produces_contract="quill.research.technical/v1",
+        ),
+        PhaseDef(
+            id="research_gate",
+            type="reviewer",
+            against=("requirements", "technical"),
+            produces_contract="quill.review.findings/v1",
+        ),
+        PhaseDef(
+            id="plan",
+            type="producer",
+            inputs=("requirements", "technical"),
+            requires=("research_gate",),
+            produces_contract="quill.plan/v1",
+        ),
+    ]
+
+    edges = {edge["key"]: edge for edge in build_phase_graph(phases)["edges"]}
+
+    assert set(edges) == {
+        "requirements->research_gate",
+        "technical->research_gate",
+        "research_gate->plan",
+    }
+    assert edges["requirements->research_gate"]["contracts"] == [
+        "quill.research.requirements/v1"
+    ]
+    assert edges["technical->research_gate"]["contracts"] == [
+        "quill.research.technical/v1"
+    ]
+    assert edges["research_gate->plan"]["contracts"] == ["quill.review.findings/v1"]
+
+
 def test_historical_graph_infers_observed_legacy_routes_and_last_phase(tmp_path: Path) -> None:
     events = [
         {"type": "run_plan", "summary": "legacy plan"},
@@ -205,6 +275,41 @@ def test_historical_graph_infers_observed_legacy_routes_and_last_phase(tmp_path:
     assert durations == {"impl": 3.3}
     assert next(edge for edge in graph.edges if edge.key == "ci->impl").kinds == ["retry"]
     assert (phase, label) == ("ci", "CI")
+
+
+def test_historical_graph_does_not_recast_local_lane_retry_as_gate_retry(
+    tmp_path: Path,
+) -> None:
+    phases = [
+        PhaseDef(id="requirements", type="producer", parallel_group="research"),
+        PhaseDef(id="technical", type="producer", parallel_group="research"),
+        PhaseDef(
+            id="research_gate",
+            type="reviewer",
+            gates=True,
+            selective_on_block=("requirements", "technical"),
+        ),
+    ]
+    durable_events = [
+        events.run_plan("plan", phase_graph=build_phase_graph(phases)),
+        events.phase_started("requirements", "Requirements"),
+        events.phase_done("requirements", "Requirements"),
+        events.phase_started("technical", "Technical"),
+        events.phase_done("technical", "Technical"),
+        events.retry("requirements", 1, 1, scope="phase", reason="malformed receipt"),
+        events.phase_started("requirements", "Requirements"),
+        events.phase_done("requirements", "Requirements"),
+        events.phase_started("research_gate", "Research gate"),
+    ]
+    (tmp_path / "state.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in durable_events) + "\n",
+        encoding="utf-8",
+    )
+
+    _, counts, _, _, _ = _historical_graph(tmp_path)
+
+    assert counts["research_gate->requirements"] == 0
+    assert counts["research_gate->technical"] == 0
 
 
 def test_historical_model_loads_require_a_durable_completion(tmp_path: Path) -> None:
