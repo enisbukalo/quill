@@ -224,6 +224,9 @@ class QuillfolioConfig:
     vllm_models: dict[str, str] = field(default_factory=dict)
     project_board: str | None = None
     excluded_issue_labels: tuple[str, ...] = ()
+    #: Require at least one successful GitHub check before automatic review and merge. Reported
+    #: pending or failed checks remain blocking even when a repository permits an empty rollup.
+    pr_checks_required: bool = True
     retries: dict[str, int] = field(default_factory=dict)
     #: Which findings stop a gate, per revise round. Defaults to historic CRITICAL/MAJOR-always.
     gates: BlockingPolicy = DEFAULT_BLOCKING_POLICY
@@ -301,6 +304,7 @@ class QuillfolioConfig:
         payload: object = {
             "workflow": self.workflow_id,
             "memory_enabled": self.memory_enabled,
+            "pr_checks_required": self.pr_checks_required,
             "mode": workflow.mode if workflow is not None else "create",
             "feedback_after_head": workflow.feedback_after_head if workflow is not None else False,
             "resolve_review_threads": (
@@ -1042,6 +1046,10 @@ def _resolve(
         )
     )
 
+    raw_pr_checks_required = repo_section.get("pr_checks_required", True)
+    if type(raw_pr_checks_required) is not bool:
+        raise ConfigInvalid("[repo].pr_checks_required must be true or false.")
+
     runner = runner_section.get("kind")
     runner = runner.strip() if isinstance(runner, str) else ""
 
@@ -1092,6 +1100,7 @@ def _resolve(
         vllm_models=vllm_models,
         project_board=project_board,
         excluded_issue_labels=excluded_issue_labels,
+        pr_checks_required=raw_pr_checks_required,
         retries=_parse_int_section(raw, "retries"),
         gates=_parse_gates(raw),
         opencode_run_seconds=timeouts.get("opencode_run_seconds", DEFAULT_OPENCODE_RUN_SECONDS),

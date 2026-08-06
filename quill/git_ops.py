@@ -518,13 +518,15 @@ class GitOps:
         expected_head_sha: str,
         expected_branch: str,
         expected_base: str,
+        pr_checks_required: bool = True,
     ) -> str:
         """Merge one validated PR head, then delete only its remote feature branch.
 
         Every mutable boundary is re-read immediately before the merge. The reviewed commit,
-        branch, base, CI state, and GitHub merge state must still match; otherwise no merge is
-        attempted. ``--match-head-commit`` closes the final race between validation and mutation.
-        The local branch is intentionally never checked out or deleted.
+        branch, base, configured CI policy, and GitHub merge state must still match; otherwise no
+        merge is attempted. A repository may permit an empty check rollup, but any reported pending
+        or failed check still blocks. ``--match-head-commit`` closes the final race between
+        validation and mutation. The local branch is intentionally never checked out or deleted.
         """
         fields = (
             "number,state,isDraft,mergeable,mergeStateStatus,headRefName,headRefOid,"
@@ -566,8 +568,13 @@ class GitOps:
         if merge_state != "CLEAN":
             raise GitError(f"PR #{pr_number} merge state is {merge_state or 'unknown'}, not CLEAN")
 
+        raw_checks = metadata.get("statusCheckRollup")
+        if not isinstance(raw_checks, list) or any(
+            not isinstance(check, dict) for check in raw_checks
+        ):
+            raise GitError(f"PR #{pr_number} returned a malformed CI check rollup")
         checks = ChecksStatus(checks=tuple(_parse_checks(raw)))
-        if not checks.reported:
+        if not checks.reported and pr_checks_required:
             raise GitError(f"PR #{pr_number} has no reported CI checks")
         if checks.pending:
             names = ", ".join(check.name for check in checks.pending)

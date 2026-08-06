@@ -25,6 +25,7 @@ def test_config_metadata_decodes_project_queue_and_default_workflow() -> None:
 [repo]
 project_board = " Board "
 excluded_issue_labels = ["EPIC", "blocked", "epic"]
+pr_checks_required = false
 
 [workflows]
 default = "feature"
@@ -39,6 +40,7 @@ mode = "review"
     assert metadata.excluded_issue_labels == ("epic", "blocked")
     assert metadata.default_workflow == "feature"
     assert metadata.pr_review_enabled
+    assert metadata.pr_checks_required is False
 
 
 def test_invalid_remote_config_keeps_safe_metadata_defaults() -> None:
@@ -48,6 +50,7 @@ def test_invalid_remote_config_keeps_safe_metadata_defaults() -> None:
     assert metadata.excluded_issue_labels == ()
     assert metadata.default_workflow == "ticket"
     assert not metadata.pr_review_enabled
+    assert metadata.pr_checks_required is True
 
 
 def test_configured_caches_remote_metadata_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,6 +59,7 @@ def test_configured_caches_remote_metadata_once(monkeypatch: pytest.MonkeyPatch)
     calls: list[tuple[str, ...]] = []
     content = _encoded(
         '[repo]\nproject_board="Board"\nexcluded_issue_labels=["EPIC"]\n'
+        "pr_checks_required=false\n"
         '[workflows]\ndefault="ticket"\n[workflows.pr_review]\nmode="review"\n'
     )
 
@@ -78,6 +82,7 @@ def test_configured_caches_remote_metadata_once(monkeypatch: pytest.MonkeyPatch)
     assert result.excluded_issue_labels == ("epic",)
     assert result.default_workflow == "ticket"
     assert result.pr_review_enabled
+    assert result.pr_checks_required is False
     assert len(calls) == 1
 
 
@@ -111,6 +116,7 @@ def test_legacy_cache_loads_new_fields_with_defaults(tmp_path: Path) -> None:
     assert repository.project_board is None
     assert repository.excluded_issue_labels == ()
     assert repository.default_workflow == "ticket"
+    assert repository.pr_checks_required is True
 
 
 def test_current_cache_normalizes_collection_fields(tmp_path: Path) -> None:
@@ -128,6 +134,7 @@ def test_current_cache_normalizes_collection_fields(tmp_path: Path) -> None:
                         "project_board": " Board ",
                         "excluded_issue_labels": ["EPIC", "Blocked"],
                         "default_workflow": " feature ",
+                        "pr_checks_required": False,
                     }
                 ]
             }
@@ -140,6 +147,7 @@ def test_current_cache_normalizes_collection_fields(tmp_path: Path) -> None:
     assert repository.project_board == "Board"
     assert repository.excluded_issue_labels == ("epic", "blocked")
     assert repository.default_workflow == "feature"
+    assert repository.pr_checks_required is False
 
 
 def test_discovery_includes_repositories_reached_as_a_collaborator(

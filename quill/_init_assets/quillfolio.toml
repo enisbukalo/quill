@@ -17,6 +17,7 @@
 # name          = "owner/repo"
 # project_board = "MyBoard"    # omit -> skip the board step
 # excluded_issue_labels = ["EPIC"] # hide matching issues and work types in the run form
+# pr_checks_required = false    # allow no-check PRs; reported pending/failed checks still block
 pr_base       = "main"
 
 [runner]

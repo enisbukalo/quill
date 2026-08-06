@@ -328,6 +328,7 @@ def test_loaded_run_resolves(tmp_path: Path) -> None:
     assert config.pr_base == "main"
     assert config.project_board == "Workbench"
     assert config.excluded_issue_labels == ("epic", "blocked")
+    assert config.pr_checks_required is True
     assert config.build_command == "make"
     assert config.test_command == "make test"
     assert config.opencode_run_seconds == 900
@@ -339,6 +340,27 @@ def test_loaded_run_resolves(tmp_path: Path) -> None:
         "review_final",
         "build_test",
     ]
+
+
+def test_repository_can_permit_an_empty_pr_check_rollup(tmp_path: Path) -> None:
+    body = _FILLED.replace(
+        'excluded_issue_labels = ["EPIC", "blocked", "epic"]',
+        'excluded_issue_labels = ["EPIC", "blocked", "epic"]\npr_checks_required = false',
+    )
+    _make_vault(tmp_path, body, _DEFAULT_PERSONAS)
+
+    assert load_config(tmp_path).pr_checks_required is False
+
+
+def test_pr_checks_policy_requires_a_boolean(tmp_path: Path) -> None:
+    body = _FILLED.replace(
+        'excluded_issue_labels = ["EPIC", "blocked", "epic"]',
+        'excluded_issue_labels = ["EPIC", "blocked", "epic"]\npr_checks_required = "no"',
+    )
+    _make_vault(tmp_path, body, _DEFAULT_PERSONAS)
+
+    with pytest.raises(ConfigInvalid, match="pr_checks_required must be true or false"):
+        load_config(tmp_path)
 
 
 def test_vllm_service_switch_config_resolves(tmp_path: Path) -> None:
@@ -1212,6 +1234,18 @@ def test_phase_set_hash_stable_and_sensitive(tmp_path: Path) -> None:
     )
     _make_vault(tmp_path, reordered, _DEFAULT_PERSONAS)
     assert load_config(tmp_path).phase_set_hash() != h1
+
+
+def test_pr_checks_policy_affects_phase_set_hash(tmp_path: Path) -> None:
+    _make_vault(tmp_path, _FILLED, _DEFAULT_PERSONAS)
+    required = load_config(tmp_path).phase_set_hash()
+    optional = _FILLED.replace(
+        'excluded_issue_labels = ["EPIC", "blocked", "epic"]',
+        'excluded_issue_labels = ["EPIC", "blocked", "epic"]\npr_checks_required = false',
+    )
+    _make_vault(tmp_path, optional, _DEFAULT_PERSONAS)
+
+    assert load_config(tmp_path).phase_set_hash() != required
 
 
 def test_slugify() -> None:

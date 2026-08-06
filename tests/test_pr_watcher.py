@@ -78,6 +78,36 @@ def test_mixed_check_results_are_skipped() -> None:
     assert pr_watcher._candidate("me/repo", item) is None
 
 
+def test_empty_check_rollup_is_admitted_only_when_repository_allows_it() -> None:
+    item = {**_pr(), "statusCheckRollup": []}
+
+    assert pr_watcher._candidate("me/repo", item) is None
+    assert pr_watcher._candidate("me/repo", item, pr_checks_required=False) == ReviewCandidate(
+        repo="me/repo",
+        branch="enhancement/example_42",
+        ticket=42,
+        pr_number=12,
+        head_sha="abc123",
+    )
+
+
+@pytest.mark.parametrize(
+    "checks",
+    [
+        None,
+        "invalid",
+        [{"status": "IN_PROGRESS", "conclusion": ""}],
+        [{"status": "COMPLETED", "conclusion": "FAILURE"}],
+    ],
+)
+def test_optional_check_policy_still_rejects_malformed_or_unsuccessful_rollups(
+    checks: object,
+) -> None:
+    item = {**_pr(), "statusCheckRollup": checks}
+
+    assert pr_watcher._candidate("me/repo", item, pr_checks_required=False) is None
+
+
 @pytest.mark.parametrize(
     "item",
     [
@@ -119,6 +149,34 @@ def test_scan_uses_only_repositories_with_review_workflow(
 
     assert queried == ["me/enabled"]
     assert candidates == admitted
+
+
+def test_scan_applies_each_repository_check_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    repositories = SimpleNamespace(
+        repositories=(
+            ConfiguredRepository(
+                "me/local",
+                "PRIVATE",
+                "now",
+                "main",
+                "a",
+                pr_review_enabled=True,
+                pr_checks_required=False,
+            ),
+        )
+    )
+    item = {**_pr(), "statusCheckRollup": []}
+    monkeypatch.setattr(pr_watcher, "_open_pull_requests", lambda _repo: [item])
+    admitted: list[ReviewCandidate] = []
+
+    def admit(candidate: ReviewCandidate) -> bool:
+        admitted.append(candidate)
+        return True
+
+    candidates = PullRequestWatcher(repositories, admit, interval_s=15).scan_once()
+
+    assert candidates == admitted
+    assert len(candidates) == 1
 
 
 def test_scan_runs_feedback_maintenance_before_discovery(

@@ -1,4 +1,4 @@
-"""Poll configured GitHub repositories and admit one review per successful PR head."""
+"""Poll configured GitHub repositories and admit one review per eligible PR head."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class RepositorySource(Protocol):
 
 
 class PullRequestWatcher:
-    """Discover successful GitHub check rollups without owning run execution."""
+    """Discover reviewable PR heads without owning run execution."""
 
     def __init__(
         self,
@@ -71,7 +71,11 @@ class PullRequestWatcher:
             if not repository.pr_review_enabled:
                 continue
             for item in _open_pull_requests(repository.name):
-                candidate = _candidate(repository.name, item)
+                candidate = _candidate(
+                    repository.name,
+                    item,
+                    pr_checks_required=repository.pr_checks_required,
+                )
                 if candidate is None:
                     continue
                 candidates.append(candidate)
@@ -116,15 +120,20 @@ def _open_pull_requests(repo: str) -> list[dict[str, object]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
-def _candidate(repo: str, item: dict[str, object]) -> ReviewCandidate | None:
+def _candidate(
+    repo: str,
+    item: dict[str, object],
+    *,
+    pr_checks_required: bool = True,
+) -> ReviewCandidate | None:
     if item.get("isDraft") is True:
         return None
     checks = item.get("statusCheckRollup")
-    if (
-        not isinstance(checks, list)
-        or not checks
-        or not all(_successful(check) for check in checks)
-    ):
+    if not isinstance(checks, list):
+        return None
+    if not checks and pr_checks_required:
+        return None
+    if checks and not all(_successful(check) for check in checks):
         return None
     issues = item.get("closingIssuesReferences")
     if not isinstance(issues, list):

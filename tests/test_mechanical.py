@@ -253,7 +253,7 @@ def test_pr_review_rejects_repository_changes_before_commenting(tmp_path: Path) 
     assert not any(call[:3] == ["gh", "pr", "comment"] for call in runner.calls)
 
 
-def test_clean_pr_review_publishes_checked_comment(tmp_path: Path) -> None:
+def test_clean_pr_review_uses_repository_check_policy(tmp_path: Path) -> None:
     runner = _FakeRunner(
         {
             "gh pr view 7 --json headRefOid": '{"headRefOid":"abc123"}',
@@ -269,9 +269,7 @@ def test_clean_pr_review_publishes_checked_comment(tmp_path: Path) -> None:
                     "headRefName": "feature/ticket-33",
                     "headRefOid": "abc123",
                     "baseRefName": "main",
-                    "statusCheckRollup": [
-                        {"name": "CI", "status": "COMPLETED", "conclusion": "SUCCESS"}
-                    ],
+                    "statusCheckRollup": [],
                 }
             ),
             "gh pr view 7 --json state,mergedAt,mergeCommit": json.dumps(
@@ -291,6 +289,7 @@ def test_clean_pr_review_publishes_checked_comment(tmp_path: Path) -> None:
     ctx.pr_number = 7
     ctx.pr_head_sha = "abc123"
     ctx.branch = "feature/ticket-33"
+    ctx.config.pr_checks_required = False
     (ctx.run_dir / "pr-review.json").write_text(
         json.dumps({"verdict": "PASS", "summary": "Ready.", "findings": []}),
         encoding="utf-8",

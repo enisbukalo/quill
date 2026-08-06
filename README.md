@@ -198,6 +198,7 @@ following machine and policy settings before its named workflow graphs:
 [repo]
 pr_base = "main"          # base branch for PRs
 excluded_issue_labels = ["EPIC"] # omit matching issues from the web run form
+# pr_checks_required = false # permit an empty PR check rollup; reported failures still block
 
 [runner]
 kind = "pi"               # REQUIRED: "pi" or "opencode"
@@ -477,14 +478,16 @@ build output, then runs requirements, correctness, and architecture audits at th
 concurrency. A finalizer emits `pr-review.json`; Quill Python validates every finding, rejects
 anything below `MAJOR`, verifies that the PR head did not move and the checkout remained unchanged,
 then creates or updates one `<!-- quill-pr-review -->` PR comment. A clean review posts an explicit
-checked-by-Quill result, revalidates the reviewed SHA, branch, base, merge state, and green CI,
-merges with a merge commit, then deletes only the remote feature branch. The persistent local
-workspace branch remains available. Review findings do not make the Quill run itself fail: `BLOCK`
-is the PR's merge-readiness result, while the run completed its job.
+checked-by-Quill result, revalidates the reviewed SHA, branch, base, merge state, and repository
+check policy, merges with a merge commit, then deletes only the remote feature branch. The
+persistent local workspace branch remains available. Review findings do not make the Quill run
+itself fail: `BLOCK` is the PR's merge-readiness result, while the run completed its job.
 
-The API watches configured repositories whose default-branch TOML defines `pr_review`. After every
-check in a non-draft PR's nonempty check rollup completes successfully, Quill queues one review for
-that exact head SHA. Failed, canceled, timed-out, skipped, neutral, or pending checks are ineligible.
+The API watches configured repositories whose default-branch TOML defines `pr_review`. By default,
+Quill queues one review for an exact non-draft PR head only after every check in its nonempty rollup
+completes successfully. `[repo].pr_checks_required = false` also admits an explicitly empty rollup
+for repositories that use Quill's local verification instead of PR Actions. Malformed check data
+and failed, canceled, timed-out, skipped, neutral, or pending reported checks remain ineligible.
 Before the ticket workflow's CI gate reads those checks, Quill verifies GitHub's
 parsed closing-issue references. If the selected ticket is missing, Quill preserves the PR body,
 appends `Closes #<ticket>`, and verifies that GitHub resolved the link; failure stops the run. The
@@ -494,9 +497,9 @@ Every completed review creates or updates the managed comment, including a clean
 Quill Pull Request Reviewer checked the revision.
 
 When PR feedback automation is enabled, a validated `BLOCK` result queues one `pr_update` run
-against the exact reviewed SHA. The update must push a different head; Quill then waits for that
-head's checks before the watcher admits its next review. A validated `PASS` closes the cycle by
-merging the exact reviewed head and deleting its remote feature branch.
+against the exact reviewed SHA. The update must push a different head; the watcher admits its next
+review when that head satisfies the same repository check policy. A validated `PASS` closes the
+cycle by merging the exact reviewed head and deleting its remote feature branch.
 Persistent cycle records prevent duplicate dispatch after polling or restart, stale feedback is
 cancelled if the head moves before dispatch, and a configurable cycle limit stops an unresolved PR
 from looping indefinitely. Quill comments never trigger this flow by themselves: only a validated

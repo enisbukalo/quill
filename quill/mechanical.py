@@ -607,6 +607,7 @@ def step_publish_pr_review(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhas
                 expected_head_sha=ctx.pr_head_sha,
                 expected_branch=ctx.branch,
                 expected_base=ctx.config.pr_base,
+                pr_checks_required=ctx.config.pr_checks_required,
             )
     except (GitError, OSError, ValueError, KeyError, TypeError) as exc:
         _record_mechanical(

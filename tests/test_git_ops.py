@@ -557,6 +557,72 @@ def test_reviewed_pr_merge_rejects_unsafe_or_unverified_state(
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
+def test_reviewed_pr_merge_can_allow_an_empty_check_rollup() -> None:
+    runner = RecordingRunner(
+        {
+            "number,state,isDraft": _merge_metadata(statusCheckRollup=[]),
+            "state,mergedAt,mergeCommit": _merged_metadata(),
+            "git ls-remote": "",
+        }
+    )
+
+    action = GitOps(runner).merge_reviewed_pr(
+        7,
+        expected_head_sha="abc123",
+        expected_branch="feature/ticket-33",
+        expected_base="main",
+        pr_checks_required=False,
+    )
+
+    assert "merged PR #7" in action
+    assert ["gh", "pr", "merge", "7", "--merge", "--match-head-commit", "abc123"] in runner.calls
+
+
+@pytest.mark.parametrize(
+    ("check", "message"),
+    [
+        ({"name": "CI", "status": "IN_PROGRESS", "conclusion": ""}, "pending CI checks"),
+        (
+            {"name": "CI", "status": "COMPLETED", "conclusion": "FAILURE"},
+            "failed CI checks",
+        ),
+    ],
+)
+def test_optional_check_policy_still_rejects_reported_nonpassing_checks(
+    check: dict[str, str], message: str
+) -> None:
+    runner = RecordingRunner({"number,state,isDraft": _merge_metadata(statusCheckRollup=[check])})
+
+    with pytest.raises(GitError, match=message):
+        GitOps(runner).merge_reviewed_pr(
+            7,
+            expected_head_sha="abc123",
+            expected_branch="feature/ticket-33",
+            expected_base="main",
+            pr_checks_required=False,
+        )
+
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+@pytest.mark.parametrize("rollup", [None, "invalid", ["invalid"]])
+def test_optional_check_policy_rejects_malformed_rollups(rollup: object) -> None:
+    runner = RecordingRunner(
+        {"number,state,isDraft": _merge_metadata(statusCheckRollup=rollup)}
+    )
+
+    with pytest.raises(GitError, match="malformed CI check rollup"):
+        GitOps(runner).merge_reviewed_pr(
+            7,
+            expected_head_sha="abc123",
+            expected_branch="feature/ticket-33",
+            expected_base="main",
+            pr_checks_required=False,
+        )
+
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
 def test_reviewed_pr_merge_tolerates_github_auto_deleting_remote_branch() -> None:
     runner = RecordingRunner(
         {

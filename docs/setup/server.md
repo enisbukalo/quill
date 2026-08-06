@@ -182,19 +182,22 @@ QUILL_PROJECT_QUEUE_WATCH_INTERVAL_SECONDS=5
 ```
 
 Automatic PR review requires a `pr_review` workflow in the repository's default-branch
-`quillfolio.toml`, a non-draft PR linked to exactly one closing issue, and a nonempty check rollup
-whose checks all completed successfully. Failed, canceled, timed-out, skipped, neutral, or pending
-checks are ineligible. The ticket workflow's mechanical `ci_check` verifies GitHub's parsed closing-issue metadata
+`quillfolio.toml` and a non-draft PR linked to exactly one closing issue. The default policy also
+requires a nonempty check rollup whose checks all completed successfully. Repositories that run
+Quill's local verification without PR Actions may set `[repo].pr_checks_required = false`; an empty
+rollup then becomes eligible, while malformed data and any reported failed, canceled, timed-out,
+skipped, neutral, or pending check remain ineligible. The ticket workflow's mechanical `ci_check`
+verifies GitHub's parsed closing-issue metadata
 before waiting on CI. When the selected ticket is absent, Quill appends `Closes #<ticket>` to the
 existing PR body and verifies the resolved link; an unrepairable link fails the run. Quill queues one
-review per head SHA after all checks pass. Set `QUILL_PR_WATCH_ENABLED=false` to require manual
+review per head SHA after its check policy is satisfied. Set `QUILL_PR_WATCH_ENABLED=false` to require manual
 review runs only.
 
 With `QUILL_PR_FEEDBACK_LOOP_ENABLED=true`, a validated `BLOCK` comment queues one `pr_update`
-against the reviewed head. A successful update must push a new head, its checks must finish, and
-the watcher then queues the next review. A validated `PASS` rechecks the exact reviewed head,
-branch, base, clean merge state, and green CI before creating a merge commit and deleting only the
-remote feature branch. The local workspace branch remains intact. A stale or unchanged head,
+against the reviewed head. A successful update must push a new head, and the watcher queues the
+next review once it satisfies the repository check policy. A validated `PASS` rechecks the exact
+reviewed head, branch, base, clean merge state, and check policy before creating a merge commit and
+deleting only the remote feature branch. The local workspace branch remains intact. A stale or unchanged head,
 update failure, and the configured cycle limit stop automatic progression. The cycle outbox is
 stored in Quill's SQLite database, so a service restart cannot dispatch the same reviewed head
 twice; one interrupted dispatch may be replayed once. Set

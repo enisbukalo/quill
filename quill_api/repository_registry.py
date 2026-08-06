@@ -37,6 +37,7 @@ class ConfiguredRepository:
     project_board: str | None = None
     excluded_issue_labels: tuple[str, ...] = ()
     default_workflow: str = "ticket"
+    pr_checks_required: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,7 @@ class _ConfigMetadata:
     project_board: str | None = None
     excluded_issue_labels: tuple[str, ...] = ()
     default_workflow: str = "ticket"
+    pr_checks_required: bool = True
 
 
 class ConfiguredRepositoryRegistry:
@@ -210,6 +212,7 @@ def _configured(item: dict[str, Any]) -> ConfiguredRepository | None:
         project_board=metadata.project_board,
         excluded_issue_labels=metadata.excluded_issue_labels,
         default_workflow=metadata.default_workflow,
+        pr_checks_required=metadata.pr_checks_required,
     )
 
 
@@ -254,6 +257,7 @@ def _config_metadata(content: dict[str, Any]) -> _ConfigMetadata:
         project_board=project_board,
         excluded_issue_labels=excluded_issue_labels,
         default_workflow=default_workflow,
+        pr_checks_required=repo.get("pr_checks_required") is not False,
     )
 
 
@@ -282,6 +286,7 @@ def _cached_repository(item: dict[str, Any]) -> ConfiguredRepository:
             if isinstance((workflow := item.get("default_workflow")), str) and workflow.strip()
             else "ticket"
         ),
+        pr_checks_required=item.get("pr_checks_required") is not False,
     )
 
 
