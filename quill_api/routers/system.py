@@ -51,6 +51,10 @@ from quill_api.schemas import (
 
 router = APIRouter(tags=["system"])
 
+#: How many succeeded runs the overview trend charts plot, newest last. Wide enough to show a real
+#: trend across a working session; bounded so the stats payload stays small on a long history.
+RECENT_RUN_WINDOW = 50
+
 _started = time.time()
 
 
@@ -255,18 +259,24 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
             for field in ("context_tokens", "output_tokens", "total_tokens"):
                 usage[field] += _integer(cumulative.get(field))
             usage["cost"] += _number(cumulative.get("cost"))
-        recent_runs.append(
-            RunLifetimePoint(
-                run_id=row.run_id,
-                status=row.status,
-                workflow=row.workflow,
-                started_at=row.started_at,
-                duration_s=max(0.0, row.finished_at - row.started_at),
-                total_tokens=_integer(cumulative.get("total_tokens"))
-                if isinstance(cumulative, dict)
-                else 0,
+        # Trend charts plot succeeded runs only. A failed or halted run stops partway through its
+        # workflow, so its duration and token totals measure how far it got before dying, not what
+        # the workflow costs. Mixing them in drags every average and trendline toward noise that
+        # answers no question. Filtering here rather than in the browser also means the retained
+        # window is 25 real data points instead of 25 rows that might contain three.
+        if row.status == "done":
+            recent_runs.append(
+                RunLifetimePoint(
+                    run_id=row.run_id,
+                    status=row.status,
+                    workflow=row.workflow,
+                    started_at=row.started_at,
+                    duration_s=max(0.0, row.finished_at - row.started_at),
+                    total_tokens=_integer(cumulative.get("total_tokens"))
+                    if isinstance(cumulative, dict)
+                    else 0,
+                )
             )
-        )
         model_loads = breakdown.get("model_loads")
         if isinstance(model_loads, list):
             for model_load in model_loads:
@@ -370,7 +380,7 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
         model_load_duration_s=model_load_duration_s,
         models=model_rows,
         phases=phase_rows,
-        recent_runs=recent_runs[-25:],
+        recent_runs=recent_runs[-RECENT_RUN_WINDOW:],
         failures=sorted(
             (
                 FailureLifetimeStats(code=code, label=label, runs=count)

@@ -225,13 +225,21 @@ h3 { font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-s
 .workflow-trends { display: grid; gap: 1.25rem; }
 .workflow-trend-group { display: grid; gap: .65rem; min-width: 0; }
 .workflow-trend-group + .workflow-trend-group { border-top: 1px solid var(--line); padding-top: 1.1rem; }
-.workflow-trend-title { margin: 0; color: var(--cyan); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+.workflow-trend-title { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; margin: 0; color: var(--cyan); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+.workflow-trend-count { color: var(--muted); font-size: .66rem; letter-spacing: .04em; white-space: nowrap; }
 .sparkline-card { min-width: 0; padding: .7rem; border: 1px solid rgba(155,108,255,.14); border-radius: 8px; background: rgba(4,3,16,.24); }
 .sparkline-card svg { display: block; width: 100%; height: auto; margin-top: .35rem; overflow: visible; }
 .sparkline-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .sparkline-header, .sparkline-latest { color: var(--muted); font-size: .66rem; }
 .sparkline-header strong { color: var(--text); }
-.sparkline-latest { text-align: right; }
+/* Latest / Avg / Peak. Three equal columns keep Avg optically centred under the plot regardless
+   of how wide the flanking values format, which `space-between` does not. */
+.sparkline-latest { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+.sparkline-summary-item { display: inline-flex; align-items: baseline; gap: .3rem; min-width: 0; }
+.sparkline-summary-item:nth-child(2) { justify-content: center; }
+.sparkline-summary-item:nth-child(3) { justify-content: flex-end; }
+.sparkline-summary-label { color: var(--muted); }
+.sparkline-summary-item strong { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sparkline-legend { display: flex; gap: .7rem; }
 .sparkline-legend-item { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
 .sparkline-legend-item::before { width: 16px; height: 2px; content: ""; background: var(--cyan); }

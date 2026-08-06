@@ -359,9 +359,12 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
             "tool_calls": 4,
         }
     ]
-    assert [point["run_id"] for point in body["recent_runs"]] == ["completed", "failed"]
+    # Trend charts plot succeeded runs only: a failed run's duration and tokens measure how far it
+    # got before dying, which would drag every average and trendline toward meaningless noise.
+    assert [point["run_id"] for point in body["recent_runs"]] == ["completed"]
     assert body["recent_runs"][0]["total_tokens"] == 80
     assert body["recent_runs"][0]["workflow"] == "pr_review"
+    assert all(point["status"] == "done" for point in body["recent_runs"])
     assert body["models"] == [
         {
             "model": "gemma-test",
@@ -1829,3 +1832,40 @@ def test_unload_proceeds_when_forced(
     assert response.status_code == 202
     assert response.json()["status"] == "unloading"
     assert unloaded == [(_AVAILABLE.model_id, True)]
+
+
+def test_recent_runs_window_keeps_the_newest_succeeded_runs(
+    client: TestClient, services: Services
+) -> None:
+    """The window is the chart's x-axis. It must fill with real data points rather than rows that
+    merely happen to be recent, or a run of failures leaves the trend lines nearly empty."""
+    from quill_api.routers.system import RECENT_RUN_WINDOW
+
+    for index in range(RECENT_RUN_WINDOW + 15):
+        services.history.record(
+            RunState(
+                run_id=f"done-{index:03d}",
+                ticket=index,
+                repo="me/proj",
+                status=RunStatus.DONE,
+                started_at=float(index + 1),
+            )
+        )
+        services.history.record(
+            RunState(
+                run_id=f"failed-{index:03d}",
+                ticket=1000 + index,
+                repo="me/proj",
+                status=RunStatus.FAILED,
+                started_at=float(index + 1),
+            )
+        )
+
+    points = client.get("/stats").json()["recent_runs"]
+
+    assert len(points) == RECENT_RUN_WINDOW
+    assert all(point["status"] == "done" for point in points)
+    assert points[-1]["run_id"] == f"done-{RECENT_RUN_WINDOW + 14:03d}"
+    assert [point["started_at"] for point in points] == sorted(
+        point["started_at"] for point in points
+    ), "charts plot oldest to newest"

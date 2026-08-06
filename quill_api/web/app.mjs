@@ -1790,9 +1790,9 @@ function renderLifetimeStats() {
   );
   totals.append(totalsGrid);
 
-  const trends = statCard("Recent Run Trends", "stats-trends");
+  const trends = statCard("Recent Run Trends · succeeded only", "stats-trends");
   if (!stats.recent_runs.length) {
-    append(trends, element("div", "empty-state", "No completed run history is available yet."));
+    append(trends, element("div", "empty-state", "No succeeded runs have been recorded yet."));
   } else {
     const workflowTrends = element("div", "workflow-trends");
     const runsByWorkflow = new Map();
@@ -1809,7 +1809,15 @@ function renderLifetimeStats() {
         sparkline("Tokens per run", "Total tokens", runs, "total_tokens", formatNumber),
         sparkline("Duration per run", "Elapsed time", runs, "duration_s", formatDuration),
       );
-      append(group, element("h4", "workflow-trend-title mono", workflow), trendGrid);
+      // The run count qualifies the averages below it — an "avg runtime" over two runs and over
+      // forty are different claims, and the charts alone do not say which one you are reading.
+      const title = element("h4", "workflow-trend-title mono");
+      append(
+        title,
+        element("span", "", workflow),
+        element("span", "workflow-trend-count", `${formatNumber(runs.length)} succeeded`),
+      );
+      append(group, title, trendGrid);
       workflowTrends.append(group);
     }
     trends.append(workflowTrends);
@@ -1942,7 +1950,7 @@ function sparkline(label, yAxisLabel, points, field, formatter) {
   const svg = svgElement("svg", {
     viewBox: `0 0 ${width} ${height}`,
     role: "img",
-    "aria-label": `${label}: ${yAxisLabel} by completed run, oldest to newest`,
+    "aria-label": `${label}: ${yAxisLabel} by succeeded run, oldest to newest`,
   });
   for (const [value, text] of yTicks) {
     const y = plot.bottom - (value / maximum) * (plot.bottom - plot.top);
@@ -1980,6 +1988,10 @@ function sparkline(label, yAxisLabel, points, field, formatter) {
     svg.append(dot);
   });
   const latest = values.at(-1) || 0;
+  const average = values.length
+    ? values.reduce((total, value) => total + value, 0) / values.length
+    : 0;
+  const peak = values.length ? Math.max(...values) : 0;
   const header = element("div", "sparkline-header");
   const legend = element("div", "sparkline-legend");
   append(
@@ -1988,7 +2000,16 @@ function sparkline(label, yAxisLabel, points, field, formatter) {
     element("span", "sparkline-legend-item trend", "Trend"),
   );
   append(header, element("strong", "", label), legend);
-  append(result, header, svg, element("div", "sparkline-latest mono", `Latest ${formatter(latest)}`));
+  // Latest / Avg / Peak across the plotted window. Every value here is succeeded-runs-only, the
+  // same series the line and trendline are drawn from, so the summary can never disagree with
+  // the chart above it.
+  const summary = element("div", "sparkline-latest mono");
+  for (const [name, value] of [["Latest", latest], ["Avg", average], ["Peak", peak]]) {
+    const item = element("span", "sparkline-summary-item");
+    append(item, element("span", "sparkline-summary-label", name), element("strong", "", formatter(value)));
+    summary.append(item);
+  }
+  append(result, header, svg, summary);
   return result;
 }
 

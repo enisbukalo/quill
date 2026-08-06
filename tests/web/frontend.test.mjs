@@ -1287,10 +1287,13 @@ test("overview shows lifetime stats while run detail keeps the phase graph", asy
   assert.match(overview, /model-stat-fill/);
   assert.match(overview, /panel\("Statistics"/);
   assert.match(overview, /statCard\("Token Usage"/);
-  const totals = overview.slice(overview.indexOf('statCard("Totals"'), overview.indexOf('statCard("Recent Run Trends"'));
+  const totals = overview.slice(overview.indexOf('statCard("Totals"'), overview.indexOf('statCard("Recent Run Trends'));
   assert.match(totals, /compactLifetimeMetric\("Model loads", stats\.model_loads\)/);
   assert.match(totals, /compactLifetimeMetric\("Model load time", formatDuration\(stats\.model_load_duration_s\)\)/);
-  assert.match(overview, /statCard\("Recent Run Trends"/);
+  // The card is labelled succeeded-only because every value in it — series, averages, and
+  // trendlines — excludes failed and halted runs.
+  assert.match(overview, /statCard\("Recent Run Trends · succeeded only"/);
+  assert.match(overview, /No succeeded runs have been recorded yet/);
   assert.match(overview, /statCard\("Phase Time"/);
   assert.match(overview, /statCard\("Queue"/);
   assert.doesNotMatch(overview, /panel\("System Status"/);
@@ -1833,6 +1836,17 @@ test("queue navigation, grouped selection, SSE, and overview snapshot are wired"
   assert.match(app, /\[plot\.right, `Run \$\{values\.length\}`, "end"\]/);
   assert.match(app, /linearTrend\(values\)/);
   assert.match(styles, /\.sparkline-trend \{[^}]*stroke-dasharray:/);
+  // Latest / Avg / Peak summarise the same `values` the line and trendline are drawn from, so the
+  // footer can never disagree with the plot above it. Avg sits in the middle of the row.
+  assert.match(app, /values\.reduce\(\(total, value\) => total \+ value, 0\) \/ values\.length/);
+  assert.match(app, /\[\["Latest", latest\], \["Avg", average\], \["Peak", peak\]\]/);
+  assert.match(app, /const peak = values\.length \? Math\.max\(\.\.\.values\) : 0/);
+  assert.match(styles, /\.sparkline-latest \{[^}]*grid-template-columns: repeat\(3, 1fr\)/);
+  assert.match(styles, /\.sparkline-summary-item:nth-child\(2\) \{ justify-content: center; \}/);
+  // The run count qualifies the averages: "avg runtime" over 2 runs and over 40 are not the
+  // same claim, and the charts alone do not say which one is on screen.
+  assert.match(app, /workflow-trend-count/);
+  assert.match(app, /\$\{formatNumber\(runs\.length\)\} succeeded/);
 });
 
 test("startup loads data for the route it lands on", async () => {
