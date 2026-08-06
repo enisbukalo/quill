@@ -86,6 +86,8 @@ export const QuillApi = {
   githubRepositories: (signal) => apiFetch("/github/repositories", { signal }),
   githubIssues: (repo, signal) =>
     apiFetch(`/github/repositories/${relativePath(repo)}/issues`, { signal }),
+  githubIssueTitles: (repo, signal) =>
+    apiFetch(`/github/repositories/${relativePath(repo)}/issue-titles`, { signal }),
   githubWorkflows: (repo, signal) =>
     apiFetch(`/github/repositories/${relativePath(repo)}/workflows`, { signal }),
   githubUpdateTarget: (repo, ticket, requireFeedback, signal) =>

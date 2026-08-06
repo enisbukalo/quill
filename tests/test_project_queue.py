@@ -92,6 +92,9 @@ class FakeBoard:
         assert status == "Done"
         self.done.append(ticket)
 
+    def issue_titles(self, repo: str, *, refresh: bool = False) -> dict[int, str]:
+        return {item.number: item.title for item in self.items}
+
 
 def issue(number: int, status: str = "Backlog") -> ProjectIssueItem:
     return ProjectIssueItem(

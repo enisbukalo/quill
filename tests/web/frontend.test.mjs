@@ -116,7 +116,7 @@ test("phase graph hides historical data shortcuts across intermediate gates", ()
 });
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
 import { linearTrend, sparklineLeftMargin } from "../../quill_api/web/trends.mjs";
-import { formatNumber } from "../../quill_api/web/format.mjs";
+import { formatNumber, ticketLabel } from "../../quill_api/web/format.mjs";
 
 test("counts and token totals render as whole numbers", () => {
   // Chart axes and averages are derived, not counted: the midpoint tick of a 556,747-token axis
@@ -1883,4 +1883,38 @@ test("system data repaints the routes that render it", async () => {
   const src = await readFile(new URL("../../quill_api/web/app.mjs", import.meta.url), "utf8");
   const body = src.slice(src.indexOf("async function refreshSystem("), src.indexOf("async function refreshRuns("));
   assert.match(body, /\["models", "settings", "api"\]\.includes\(state\.route\.section\)[\s\S]{0,60}render\(\)/);
+});
+
+test("runs are named after their ticket, with PR workflows naming themselves", () => {
+  const titles = { "50": "Add grid coordinates, footprints, and cell occupancy" };
+  // A ticket run is doing the ticket's work, so it carries the issue title.
+  assert.equal(
+    ticketLabel({ ticket: 50, workflow: "ticket" }, titles),
+    "#50 Add grid coordinates, footprints, and cell occupancy",
+  );
+  // A PR review or update run is not doing that work; repeating the title says less than
+  // naming what the run actually is.
+  assert.equal(ticketLabel({ ticket: 50, workflow: "pr_review" }, titles), "#50 PR Review");
+  assert.equal(ticketLabel({ ticket: 50, workflow: "pr_update" }, titles), "#50 PR Update");
+  // Titles are cosmetic and load separately, so an unknown one degrades to the bare number
+  // rather than blanking the cell or inventing a name.
+  assert.equal(ticketLabel({ ticket: 99, workflow: "ticket" }, titles), "#99");
+  assert.equal(ticketLabel({ ticket: 99, workflow: "ticket" }), "#99");
+});
+
+test("the ticket name sits between the run and its status, and labels chart points", async () => {
+  const app = await readFile(new URL("../../quill_api/web/app.mjs", import.meta.url), "utf8");
+  assert.match(
+    app,
+    /\["Run", "Ticket", "Status", "Repository", "Workflow", "Phase", "Total Run Time", "Updated"\]/,
+  );
+  // The cell carries number and name together, so the old number-only column would duplicate it.
+  assert.doesNotMatch(app, /element\("td", "mono", run\.ticket \?\? "—"\)/);
+  assert.match(app, /ticketCell\.textContent = ticketLabel\(run, titlesFor\(run\.repo\)\)/);
+  assert.match(app, /row,\s*runCell,\s*ticketCell,\s*statusCell,/);
+  // Hovering a chart dot names the ticket rather than only its run id.
+  assert.match(app, /ticketLabel\(point, titlesFor\(point\.repo\)\)/);
+  // Titles come from the board watcher's cache, which covers closed issues; the open-only
+  // issues endpoint would leave finished runs unnamed.
+  assert.match(app, /QuillApi\.githubIssueTitles\(repo\)/);
 });

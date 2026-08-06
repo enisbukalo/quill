@@ -1869,3 +1869,67 @@ def test_recent_runs_window_keeps_the_newest_succeeded_runs(
     assert [point["started_at"] for point in points] == sorted(
         point["started_at"] for point in points
     ), "charts plot oldest to newest"
+
+
+def test_issue_titles_include_closed_tickets(
+    client: TestClient, services: Services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished run's ticket is normally closed. `gh issue list` defaults to open issues, so
+    joining names from /issues would leave exactly the runs worth reading unnamed."""
+    services.repositories._repositories = (
+        ConfiguredRepository(
+            name="me/proj",
+            visibility="private",
+            updated_at="2026-01-01T00:00:00Z",
+            default_branch="main",
+            config_sha="sha",
+            project_board="Board",
+        ),
+    )
+    captured: list[str] = []
+
+    def _titles(repo: str) -> dict[int, str]:
+        captured.append(repo)
+        return {7: "Closed ticket title", 8: "Open ticket title"}
+
+    monkeypatch.setattr(services.project_queue, "issue_titles", _titles)
+
+    body = client.get("/github/repositories/me/proj/issue-titles").json()
+
+    assert captured == ["me/proj"]
+    assert body["repo"] == "me/proj"
+    # JSON object keys are strings; the dashboard indexes by String(run.ticket).
+    assert body["titles"] == {"7": "Closed ticket title", "8": "Open ticket title"}
+
+
+def test_issue_titles_survive_an_unreachable_board(
+    client: TestClient, services: Services, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Naming a run is cosmetic. A GitHub outage must cost a name on screen, never the page."""
+    monkeypatch.setattr(services.project_queue, "issue_titles", lambda repo: {})
+
+    response = client.get("/github/repositories/me/proj/issue-titles")
+
+    assert response.status_code == 200
+    assert response.json()["titles"] == {}
+
+
+def test_lifetime_points_carry_their_ticket_and_repo(
+    client: TestClient, services: Services
+) -> None:
+    """A chart point has to say which ticket and repository it came from, or its tooltip cannot
+    name the work behind an outlier."""
+    services.history.record(
+        RunState(
+            run_id="named",
+            ticket=41,
+            repo="me/proj",
+            workflow="ticket",
+            status=RunStatus.DONE,
+            started_at=1.0,
+        )
+    )
+
+    points = client.get("/stats").json()["recent_runs"]
+
+    assert [(p["ticket"], p["repo"]) for p in points] == [(41, "me/proj")]

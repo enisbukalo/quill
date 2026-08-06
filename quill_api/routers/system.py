@@ -269,6 +269,8 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
                 RunLifetimePoint(
                     run_id=row.run_id,
                     status=row.status,
+                    ticket=row.ticket,
+                    repo=row.repo or "",
                     workflow=row.workflow,
                     started_at=row.started_at,
                     duration_s=max(0.0, row.finished_at - row.started_at),

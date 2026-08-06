@@ -52,6 +52,8 @@ class BoardBoundary(Protocol):
 
     def move_issue(self, repo: str, ticket: int, board_title: str, status: str) -> None: ...
 
+    def issue_titles(self, repo: str, *, refresh: bool = False) -> dict[int, str]: ...
+
 
 type BoardFactory = Callable[[], BoardBoundary]
 type AdmitRoot = Callable[[ProjectQueueItem], RunState]
@@ -160,6 +162,18 @@ class ProjectQueueCoordinator:
                 repository.project_board,
                 repository.excluded_issue_labels,
             )
+
+    def issue_titles(self, repo: str) -> dict[int, str]:
+        """Cached issue titles for ``repo``, or an empty mapping when GitHub is unreachable.
+
+        Deliberately outside ``self._lock``: this serves a read-only display concern and must never
+        be able to stall behind — or deadlock against — a board scan that is mid-reconcile. A miss
+        costs a name on screen, never a scheduling decision.
+        """
+        try:
+            return self._board.issue_titles(repo)
+        except (GitError, OSError, ValueError, subprocess.SubprocessError):
+            return {}
 
     def add_batch(
         self, repository: ConfiguredRepository, tickets: list[int]

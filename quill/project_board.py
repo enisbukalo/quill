@@ -470,6 +470,19 @@ class ProjectBoard:
         self._items[cache_key] = tuple(dict(item) for item in rows)
         return list(self._items[cache_key])
 
+    def issue_titles(self, repo: str, *, refresh: bool = False) -> dict[int, str]:
+        """Issue number to title for every issue in ``repo``, open **and** closed.
+
+        The hierarchy query this reads is unfiltered by state and already paginates the whole
+        repository, so a finished ticket — closed, and therefore invisible to ``gh issue list``'s
+        default open-only listing — still resolves here. Reusing the cache also means naming runs
+        after their tickets costs no additional GitHub calls beyond what the board watcher makes.
+        """
+        return {
+            number: issue.title
+            for number, issue in self._issue_hierarchy(repo, refresh=refresh).items()
+        }
+
     def _issue_hierarchy(self, repo: str, *, refresh: bool = False) -> dict[int, _IssueMetadata]:
         if not refresh and repo in self._hierarchies:
             return self._hierarchies[repo]

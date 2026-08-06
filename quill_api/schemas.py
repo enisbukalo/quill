@@ -80,6 +80,17 @@ class GitHubIssueList(BaseModel):
     work_types: list[str]
 
 
+class GitHubIssueTitles(BaseModel):
+    """Issue number to title for a repository, open and closed.
+
+    Keys are strings because JSON object keys are strings; the dashboard indexes by
+    ``String(run.ticket)``.
+    """
+
+    repo: RepoName
+    titles: dict[str, str] = Field(default_factory=dict)
+
+
 class ProjectQueueCandidate(BaseModel):
     number: int
     title: str
@@ -383,6 +394,10 @@ class PhaseLifetimeStats(BaseModel):
 class RunLifetimePoint(BaseModel):
     run_id: str
     status: str
+    # Carried so a chart point can name its ticket. The dashboard resolves the title per repository,
+    # so a point has to say which repository it came from as well as which ticket.
+    ticket: int = 0
+    repo: str = ""
     workflow: str = "ticket"
     started_at: float = 0.0
     duration_s: float = 0.0

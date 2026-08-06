@@ -22,6 +22,7 @@ from quill_api.deps import ServicesDep
 from quill_api.schemas import (
     GitHubIssue,
     GitHubIssueList,
+    GitHubIssueTitles,
     GitHubRepository,
     GitHubRepositoryList,
     UpdateTarget,
@@ -294,6 +295,23 @@ def issues(owner: str, name: str) -> GitHubIssueList:
             }
         ),
     )
+
+
+@router.get("/repositories/{owner}/{name}/issue-titles")
+def issue_titles(owner: str, name: str, services: ServicesDep) -> GitHubIssueTitles:
+    """Issue titles for naming runs after their tickets, including closed issues.
+
+    ``/issues`` lists open issues only, which is exactly the wrong set here: a finished run's
+    ticket is normally closed, so joining against that endpoint would leave the runs worth reading
+    unnamed. This reads the board watcher's cached repository-wide hierarchy instead, so it costs
+    no extra GitHub calls and covers every ticket a run could reference.
+    """
+    try:
+        repo = validate_repo(f"{owner}/{name}")
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    titles = services.project_queue.issue_titles(repo)
+    return GitHubIssueTitles(repo=repo, titles={str(k): v for k, v in titles.items()})
 
 
 def _issue(item: dict[str, object]) -> GitHubIssue:

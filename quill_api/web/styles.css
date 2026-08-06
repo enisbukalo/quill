@@ -668,3 +668,7 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .resident-model { text-transform: none; }
 .resident-endpoint { margin: 0; }
 .model-action-cell { width: 1%; white-space: nowrap; text-align: right; }
+
+/* Ticket names are long and the table already carries eight columns; cap the cell and let the
+   title attribute carry the full text on hover. */
+.run-ticket-cell { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

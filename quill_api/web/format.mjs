@@ -15,6 +15,23 @@ export function chooseSelection(available, current) {
   return options[0] ?? "";
 }
 
+/** Workflow tags that describe the run rather than the ticket's own work. */
+const WORKFLOW_LABELS = { pr_review: "PR Review", pr_update: "PR Update" };
+
+/** "#50 Add grid coordinates…", "#49 PR Review", or "#49" when no title is known.
+ *
+ * A PR review or update run is not doing the ticket's work, so repeating the issue title there
+ * says less than naming what the run actually is. Falls back to the bare number rather than
+ * inventing a name when the repository's titles have not loaded.
+ */
+export function ticketLabel(run, titles = {}) {
+  const number = `#${run?.ticket ?? "?"}`;
+  const workflow = WORKFLOW_LABELS[run?.workflow];
+  if (workflow) return `${number} ${workflow}`;
+  const title = titles?.[String(run?.ticket)];
+  return title ? `${number} ${title}` : number;
+}
+
 export function queueCapableRepositories(repositories) {
   return (repositories || []).filter((repository) => (
     typeof repository?.project_board === "string" && repository.project_board.trim()

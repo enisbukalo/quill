@@ -22,6 +22,7 @@ import {
   runElapsed,
   safeExternalUrl,
   statusTone,
+  ticketLabel,
   validCatalogName,
   validReason,
 } from "./format.mjs";
@@ -67,6 +68,9 @@ const state = {
   queue: { active: null, queued: [], depth: 0 },
   projectQueue: { batches: [], depth: 0 },
   queuePage: { repo: "", groups: [], selected: new Set(), result: null },
+  //: repository name -> { "50": "Add grid coordinates…" }. Names runs and chart points after their
+  //: tickets. Fetched per repository because issue numbers only mean anything within one.
+  ticketTitles: {},
   runs: [],
   overviewRuns: [],
   overviewRunPage: { limit: 25, offset: 0, hasMore: false },
@@ -292,6 +296,13 @@ async function refreshRuns({ quiet = false, includeInspector = true } = {}) {
       state.restartOptions = restartOptions;
       if (state.artifact?.runId !== selected) state.artifact = null;
     }
+    // Names for the rows and chart points just loaded. Awaited so the first paint after a refresh
+    // already carries titles instead of flashing bare ticket numbers and then rewriting them.
+    await refreshTicketTitles([
+      ...state.runs,
+      ...state.overviewRuns,
+      ...(state.stats?.recent_runs || []),
+    ]);
     delete state.errors.runs;
     markRefresh();
   } catch (error) {
@@ -331,6 +342,31 @@ async function refreshGitHubRepositories({ quiet = false } = {}) {
     setLoading("github-repositories", false);
     if (state.route.section === "runs") render();
   }
+}
+
+/** Load issue titles for the repositories present in `sources`, skipping ones already held.
+ *
+ * Titles are cosmetic, so a failure is swallowed: a run row falls back to its bare ticket number
+ * rather than the whole table erroring over a name. Fetched once per repository per session —
+ * issue titles change rarely and the server answers from the board watcher's cache anyway.
+ */
+async function refreshTicketTitles(sources, { force = false } = {}) {
+  const repos = [...new Set((sources || []).map((item) => item?.repo).filter(Boolean))];
+  const wanted = repos.filter((repo) => force || !state.ticketTitles[repo]);
+  if (!wanted.length) return;
+  await Promise.all(wanted.map(async (repo) => {
+    try {
+      const listing = await QuillApi.githubIssueTitles(repo);
+      state.ticketTitles = { ...state.ticketTitles, [repo]: listing.titles || {} };
+    } catch {
+      state.ticketTitles = { ...state.ticketTitles, [repo]: state.ticketTitles[repo] || {} };
+    }
+  }));
+}
+
+/** Titles for one repository, or an empty map when none are loaded. */
+function titlesFor(repo) {
+  return state.ticketTitles[repo] || {};
 }
 
 async function refreshProjectQueue({ quiet = false } = {}) {
@@ -673,8 +709,9 @@ function connectEvents() {
     }
     if (event.run) mergeLiveRuns([event.run]);
     if (event.run && ["done", "failed", "halted"].includes(event.run.status)) {
-      QuillApi.stats().then((stats) => {
+      QuillApi.stats().then(async (stats) => {
         state.stats = stats;
+        await refreshTicketTitles(stats.recent_runs || []);
         if (state.route.section === "overview") updateOverviewRegions({ settled: true });
       }).catch(() => {});
     }
@@ -1984,7 +2021,10 @@ function sparkline(label, yAxisLabel, points, field, formatter) {
   coordinates.forEach(([cx, cy], index) => {
     const dot = svgElement("circle", { cx, cy, r: 4, class: "sparkline-dot", "data-status": points[index].status });
     dot.append(svgElement("title"));
-    dot.firstChild.textContent = `Run ${index + 1} · ${points[index].run_id} · ${points[index].status}: ${formatter(values[index])}`;
+    // Hover names the ticket. "Run 7 · 20260806-152008-ticket50" told you nothing about which
+    // piece of work the outlier actually was.
+    const point = points[index];
+    dot.firstChild.textContent = `${ticketLabel(point, titlesFor(point.repo))} · ${point.run_id} · ${point.status}: ${formatter(values[index])}`;
     svg.append(dot);
   });
   const latest = values.at(-1) || 0;
@@ -2078,7 +2118,7 @@ function runsTable(runs, selectable = false) {
     selectAllCell.append(selectAll);
     headRow.append(selectAllCell);
   }
-  for (const title of ["Run", "Status", "Repository", "Ticket", "Workflow", "Phase", "Total Run Time", "Updated"]) append(headRow, element("th", "", title));
+  for (const title of ["Run", "Ticket", "Status", "Repository", "Workflow", "Phase", "Total Run Time", "Updated"]) append(headRow, element("th", "", title));
   append(head, headRow);
   const body = element("tbody");
   for (const run of runs) {
@@ -2112,12 +2152,17 @@ function runsTable(runs, selectable = false) {
     if (run.started_at && !terminal) durationNode.dataset.liveRunStarted = String(run.started_at);
     const durationCell = element("td");
     durationCell.append(durationNode);
+    // The ticket cell carries the number and the name together, so the old number-only column
+    // would now be pure duplication; it moves here rather than being added alongside.
+    const ticketCell = element("td", "run-ticket-cell");
+    ticketCell.textContent = ticketLabel(run, titlesFor(run.repo));
+    ticketCell.title = ticketCell.textContent;
     append(
       row,
       runCell,
+      ticketCell,
       statusCell,
       element("td", "", run.repo || "—"),
-      element("td", "mono", run.ticket ?? "—"),
       element("td", "", `${run.workflow || "legacy ticket"}${run.pr_number ? ` · PR #${run.pr_number}` : ""}`),
       element("td", "", run.phase_label || run.phase || "—"),
       durationCell,
