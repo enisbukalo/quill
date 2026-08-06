@@ -116,6 +116,17 @@ test("phase graph hides historical data shortcuts across intermediate gates", ()
 });
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
 import { linearTrend, sparklineLeftMargin } from "../../quill_api/web/trends.mjs";
+import { formatNumber } from "../../quill_api/web/format.mjs";
+
+test("counts and token totals render as whole numbers", () => {
+  // Chart axes and averages are derived, not counted: the midpoint tick of a 556,747-token axis
+  // is 278,373.5 and its mean 278,161.1666…, which the default formatter rendered in full.
+  assert.equal(formatNumber(278373.5), "278,374");
+  assert.equal(formatNumber(278161.1666666667), "278,161");
+  assert.equal(formatNumber(0), "0");
+  assert.equal(formatNumber(42), "42");
+  assert.equal(formatNumber(Number.NaN), "\u2014");
+});
 
 test("run trend uses a least-squares line and never projects below zero", () => {
   assert.deepEqual(linearTrend([]), []);

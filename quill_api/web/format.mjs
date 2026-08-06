@@ -40,9 +40,16 @@ export function groupSelectionState(group, selected) {
   };
 }
 
+/** Whole-number display for counts and token totals.
+ *
+ * Every caller passes a count or a token total, so a fraction is never meaningful here. Derived
+ * values are what made this visible: a chart's midpoint tick and its average are computed, not
+ * counted, so the default formatter rendered "278,373.5" tokens on an axis and "278,161.167" as
+ * an average.
+ */
 export function formatNumber(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? new Intl.NumberFormat().format(number) : "—";
+  return Number.isFinite(number) ? new Intl.NumberFormat().format(Math.round(number)) : "—";
 }
 
 export function formatMoney(value) {
