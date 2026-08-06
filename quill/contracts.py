@@ -348,9 +348,7 @@ def snapshot_artifact(
     relative = source.relative_to(run_dir.resolve())
     slot_suffix = f"-{slot}" if slot is not None else ""
     snapshot_rel = (
-        Path("work")
-        / safe_phase_id(phase_id)
-        / f"attempt-{attempt}{slot_suffix}{source.suffix}"
+        Path("work") / safe_phase_id(phase_id) / f"attempt-{attempt}{slot_suffix}{source.suffix}"
     )
     snapshot = prepare_output_path(run_dir, run_dir / snapshot_rel)
     if snapshot.exists():
@@ -482,7 +480,9 @@ def new_contract(
     ).with_digest()
 
 
-def publish_contract(run_dir: Path, contract: PhaseContract, catalog: ContractCatalog) -> ContractRef:
+def publish_contract(
+    run_dir: Path, contract: PhaseContract, catalog: ContractCatalog
+) -> ContractRef:
     """Validate and atomically publish an immutable attempt plus its ``latest`` pointer."""
     validated = validate_contract(contract, catalog)
     for artifact in validated.source_artifacts:
@@ -556,7 +556,12 @@ def validate_contract(contract: PhaseContract, catalog: ContractCatalog) -> Phas
         )
     if contract.attempt <= 0:
         raise ContractError("contract attempt must be positive")
-    if not contract.run_id or not contract.workflow or not contract.phase_id or not contract.phase_outcome:
+    if (
+        not contract.run_id
+        or not contract.workflow
+        or not contract.phase_id
+        or not contract.phase_outcome
+    ):
         raise ContractError("contract identity fields must be non-empty")
     safe_phase_id(contract.phase_id)
     try:
@@ -568,17 +573,16 @@ def validate_contract(contract: PhaseContract, catalog: ContractCatalog) -> Phas
     for name, value in (("git_head", contract.git_head), ("checkpoint", contract.checkpoint)):
         if value is not None and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
             raise ContractError(f"contract repository {name} must be a full Git object ID")
-    if contract.worktree_fingerprint is not None and re.fullmatch(
-        r"[0-9a-f]{64}", contract.worktree_fingerprint
-    ) is None:
+    if (
+        contract.worktree_fingerprint is not None
+        and re.fullmatch(r"[0-9a-f]{64}", contract.worktree_fingerprint) is None
+    ):
         raise ContractError("contract worktree_fingerprint must be SHA-256")
     _validate_contract_payload(spec, contract.contract_status, contract.payload)
     artifact_paths: set[str] = set()
     artifact_snapshots: set[str] = set()
     expected_snapshot_parent = PurePosixPath("work") / safe_phase_id(contract.phase_id)
-    expected_snapshot_name = re.compile(
-        rf"^attempt-{contract.attempt}(?:-[0-9]+)?(?:\.[^/]+)?$"
-    )
+    expected_snapshot_name = re.compile(rf"^attempt-{contract.attempt}(?:-[0-9]+)?(?:\.[^/]+)?$")
     for artifact in contract.source_artifacts:
         source_path = _validated_relative_path(artifact.path, "artifact source")
         snapshot_path = _validated_relative_path(artifact.snapshot, "artifact snapshot")
@@ -641,7 +645,9 @@ def _parse_spec(raw: dict[str, object], filename: str) -> ContractSpec:
     }
     extras = sorted(set(raw) - allowed)
     if extras:
-        raise ContractError(f"contract specification {filename} has unknown keys: {', '.join(extras)}")
+        raise ContractError(
+            f"contract specification {filename} has unknown keys: {', '.join(extras)}"
+        )
     kind = raw.get("kind")
     version = raw.get("version")
     if not isinstance(kind, str) or not isinstance(version, int) or isinstance(version, bool):
@@ -876,7 +882,9 @@ def _required_str(mapping: object, key: str) -> str:
     return value
 
 
-def _optional_str(mapping: dict[str, object], key: str) -> str | None:
+def _optional_str(mapping: object, key: str) -> str | None:
+    if not isinstance(mapping, dict):
+        raise ContractError(f"contract field {key!r} has no object")
     value = mapping.get(key)
     if value is None:
         return None
@@ -1004,9 +1012,7 @@ def _atomic_write(path: Path, text: str, *, replace: bool) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _validate_contract_payload(
-    spec: ContractSpec, status: ContractStatus, payload: object
-) -> None:
+def _validate_contract_payload(spec: ContractSpec, status: ContractStatus, payload: object) -> None:
     """Validate complete payloads against their spec and incomplete payloads against one shape."""
     if status is not ContractStatus.INCOMPLETE:
         spec.validate_payload(payload)
@@ -1020,11 +1026,12 @@ def _validate_contract_payload(
     for index, row in enumerate(missing, 1):
         if not isinstance(row, dict) or set(row) != {"field", "reason", "evidence"}:
             raise ContractError(f"incomplete payload item #{index} has invalid fields")
+        row_mapping = cast(dict[str, object], row)
         for key in ("field", "reason", "evidence"):
-            value = row.get(key)
+            value = row_mapping.get(key)
             if not isinstance(value, str) or not value.strip():
                 raise ContractError(f"incomplete payload item #{index} has invalid {key}")
-        field = cast(str, row["field"]).strip()
+        field = cast(str, row_mapping["field"]).strip()
         if field in seen:
             raise ContractError(f"incomplete payload repeats field {field!r}")
         seen.add(field)

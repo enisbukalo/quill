@@ -60,9 +60,7 @@ def test_phase_done_carries_terminal_reason() -> None:
 def test_contract_events_are_bounded_metadata_without_payloads() -> None:
     samples = [
         events.projection_started("plan", kind="quill.plan/v1", attempt=2),
-        events.projection_done(
-            "plan", kind="quill.plan/v1", valid=False, reason="invalid_json"
-        ),
+        events.projection_done("plan", kind="quill.plan/v1", valid=False, reason="invalid_json"),
         events.contract_validated("plan", kind="quill.plan/v1", status="COMPLETE"),
         events.contract_incomplete("plan", kind="quill.plan/v1", missing_count=2),
         events.contract_published(

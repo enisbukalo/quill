@@ -341,9 +341,8 @@ def _historical_graph(
                 scope = event.get("scope")
                 reason = event.get("reason")
                 phase = event.get("phase")
-                if (
-                    isinstance(phase, str)
-                    and (scope == "phase" or (scope is None and isinstance(reason, str)))
+                if isinstance(phase, str) and (
+                    scope == "phase" or (scope is None and isinstance(reason, str))
                 ):
                     phase_retries[phase] = phase_retries.get(phase, 0) + 1
             if event.get("type") in {events.PHASE_DONE, events.GATE_VERDICT}:

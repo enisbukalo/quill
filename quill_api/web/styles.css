@@ -222,6 +222,10 @@ h3 { font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-s
 .token-legend-dot[data-tone="context"] { background: var(--violet); }
 .token-legend-dot[data-tone="output"] { background: var(--cyan); }
 .trend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.workflow-trends { display: grid; gap: 1.25rem; }
+.workflow-trend-group { display: grid; gap: .65rem; min-width: 0; }
+.workflow-trend-group + .workflow-trend-group { border-top: 1px solid var(--line); padding-top: 1.1rem; }
+.workflow-trend-title { margin: 0; color: var(--cyan); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
 .sparkline-card { min-width: 0; padding: .7rem; border: 1px solid rgba(155,108,255,.14); border-radius: 8px; background: rgba(4,3,16,.24); }
 .sparkline-card svg { display: block; width: 100%; height: auto; margin-top: .35rem; overflow: visible; }
 .sparkline-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }

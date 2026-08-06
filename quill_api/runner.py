@@ -43,6 +43,7 @@ from quill.telemetry import (
     SCHEMA_VERSION,
     build_breakdown,
     cumulative_live_usage,
+    phase_window_usage,
     token_cost,
 )
 from quill_api.events import EventBus
@@ -477,7 +478,6 @@ class RunManager:
 
             def publish_live(event_type: str) -> None:
                 with live_lock:
-                    total = live_tokens.total_tokens
                     phase = state.phase or "unknown"
                     phase_tokens = live_phase_usage.get(phase, LiveUsage())
                     phase_tools = live_phase_tools.get(phase, {})
@@ -518,13 +518,15 @@ class RunManager:
                             "tools": dict(tools),
                             "tool_calls_total": sum(tools.values()),
                         }
+                    window_usage = phase_window_usage(list(phase_usages.values()))
+                    window_total = int(window_usage["total_tokens"])
                     payload: dict[str, object] = {
-                        "context_tokens": live_tokens.input_tokens,
-                        "output_tokens": live_tokens.output_tokens,
-                        "total_tokens": total,
-                        "context_window_tokens": live_tokens.context_window_tokens,
+                        "context_tokens": int(window_usage["context_tokens"]),
+                        "output_tokens": int(window_usage["output_tokens"]),
+                        "total_tokens": window_total,
+                        "context_window_tokens": window_total,
                         "cost": token_cost(
-                            total,
+                            window_total,
                             0.0,
                             backend=state.backend,
                             usd_per_1m=self._usd_per_1m,

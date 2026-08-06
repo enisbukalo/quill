@@ -417,5 +417,7 @@ def test_restart_rejects_tampered_or_partial_closure(tmp_path: Path, damage: str
         seed = json.loads(seed_path.read_text(encoding="utf-8"))
         seed["contracts"] = seed["contracts"][:-1]
         seed_path.write_text(json.dumps(seed), encoding="utf-8")
-        with pytest.raises(RestartError, match="artifact inventory|missing upstream|missing direct"):
+        with pytest.raises(
+            RestartError, match="artifact inventory|missing upstream|missing direct"
+        ):
             restart_contract_refs(target, config=config, start_phase="impl")

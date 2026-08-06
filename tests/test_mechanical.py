@@ -363,9 +363,9 @@ def test_build_test_runner_writes_log(tmp_path: Path) -> None:
     (tmp_path / "ok.txt").write_text("", encoding="utf-8")
     runner = build_test_runner(str(tmp_path))
     config = _config(tmp_path, build_command="echo hi", test_command="echo bye")
-    ok, log = runner(config, "build_test")
-    assert ok
-    assert "hi" in log
+    observed = runner(config, "build_test")
+    assert observed.ok
+    assert "hi" in observed.combined_log
     assert (tmp_path / "logs" / "test-log.txt").exists()
 
 
@@ -377,14 +377,14 @@ def test_build_test_runner_can_select_test_or_build_independently(tmp_path: Path
         test_command="echo unit-tests",
     )
 
-    test_ok, test_log = runner(config, "test")
-    build_ok, build_log = runner(config, "build")
+    test_result = runner(config, "test")
+    build_result = runner(config, "build")
 
-    assert test_ok and build_ok
-    assert "unit-tests" in test_log
-    assert "executable-build" not in test_log
-    assert "executable-build" in build_log
-    assert "unit-tests" not in build_log
+    assert test_result.ok and build_result.ok
+    assert "unit-tests" in test_result.combined_log
+    assert "executable-build" not in test_result.combined_log
+    assert "executable-build" in build_result.combined_log
+    assert "unit-tests" not in build_result.combined_log
 
 
 def test_build_test_runner_cancel_terminates_active_process_group(tmp_path: Path) -> None:
@@ -401,7 +401,7 @@ def test_build_test_runner_cancel_terminates_active_process_group(tmp_path: Path
     command = shlex.join((sys.executable, str(blocker)))
     runner = build_test_runner(str(tmp_path))
     config = _config(tmp_path, build_command=command, test_command=command)
-    result: list[tuple[bool, str]] = []
+    result: list[VerificationResult] = []
     worker = threading.Thread(target=lambda: result.append(runner(config, "test")))
     worker.start()
 
@@ -416,7 +416,7 @@ def test_build_test_runner_cancel_terminates_active_process_group(tmp_path: Path
 
     assert not worker.is_alive()
     assert result and result[0][0] is False
-    assert "terminated by stop request" in result[0][1]
+    assert "terminated by stop request" in result[0].combined_log
 
 
 # -- dispatch ---------------------------------------------------------------------

@@ -193,6 +193,7 @@ def test_record_persists_last_phase_and_bulk_delete_keeps_lifetime_accounting() 
     state.phase_label = "Build executables"
     state.failure_code = "build_failed"
     state.failure_label = "Local build failed"
+    state.workflow = "pr_review"
     h.record(state)
     h.record_breakdown("a", {"schema_version": 1}, 1)
 
@@ -210,7 +211,23 @@ def test_record_persists_last_phase_and_bulk_delete_keeps_lifetime_accounting() 
         "build_failed",
         "Local build failed",
     )
+    assert lifetime[0].workflow == "pr_review"
     assert h.lifetime_breakdowns() == [{"schema_version": 1}]
+
+
+def test_lifetime_migration_backfills_workflow_from_retained_run(tmp_path: Path) -> None:
+    database = tmp_path / "quill.db"
+    history = History(f"sqlite+pysqlite:///{database}")
+    state = _state("review", 7, RunStatus.DONE)
+    state.workflow = "pr_review"
+    history.record(state)
+    with history._engine.begin() as connection:
+        connection.execute(text("ALTER TABLE lifetime_runs DROP COLUMN workflow"))
+    history._engine.dispose()
+
+    migrated = History(f"sqlite+pysqlite:///{database}")
+
+    assert migrated.lifetime_rows()[0].workflow == "pr_review"
 
 
 def test_application_setting_round_trip_and_replace() -> None:

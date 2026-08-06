@@ -115,6 +115,7 @@ class LifetimeRunRow(Base):
     ticket: Mapped[int] = mapped_column()
     status: Mapped[str] = mapped_column(String(20))
     repo: Mapped[str | None] = mapped_column(String(255), default=None)
+    workflow: Mapped[str] = mapped_column(String(100), default="ticket")
     failure_code: Mapped[str | None] = mapped_column(String(100), default=None)
     failure_label: Mapped[str | None] = mapped_column(String(255), default=None)
     started_at: Mapped[float] = mapped_column(default=0.0)
@@ -480,6 +481,21 @@ class History:
         lifetime_columns = {
             column["name"] for column in inspect(self._engine).get_columns("lifetime_runs")
         }
+        if "workflow" not in lifetime_columns:
+            with self._engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE lifetime_runs ADD COLUMN workflow VARCHAR(100) "
+                        "NOT NULL DEFAULT 'ticket'"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "UPDATE lifetime_runs SET workflow = COALESCE("
+                        "(SELECT runs.workflow FROM runs "
+                        "WHERE runs.run_id = lifetime_runs.run_id), 'ticket')"
+                    )
+                )
         for name, statement in {
             "failure_code": "ALTER TABLE lifetime_runs ADD COLUMN failure_code VARCHAR(100)",
             "failure_label": "ALTER TABLE lifetime_runs ADD COLUMN failure_label VARCHAR(255)",
@@ -524,6 +540,7 @@ class History:
                         ticket=state.ticket,
                         status=state.status.value,
                         repo=state.repo or None,
+                        workflow=state.workflow,
                         failure_code=state.failure_code,
                         failure_label=state.failure_label,
                         started_at=row.started_at,
@@ -1349,6 +1366,7 @@ class History:
                         ticket=run.ticket,
                         status=run.status,
                         repo=run.repo,
+                        workflow=run.workflow,
                         failure_code=run.failure_code,
                         failure_label=run.failure_label,
                         started_at=run.started_at,
@@ -1375,6 +1393,7 @@ class History:
                         ticket=run.ticket,
                         status=run.status,
                         repo=run.repo,
+                        workflow=run.workflow,
                         failure_code=run.failure_code,
                         failure_label=run.failure_label,
                         started_at=run.started_at,

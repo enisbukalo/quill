@@ -25,6 +25,7 @@ from quill.config import (
 from quill.loader import ModelLoader, ModelLoadError, router_url
 from quill.modelserver import VllmServer
 from quill.preflight import gh_authenticated, gh_available
+from quill.telemetry import phase_window_usage
 from quill_api import catalog
 from quill_api.deps import ServicesDep
 from quill_api.model_registry import SwitchInProgress
@@ -239,7 +240,17 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
     recent_runs: list[RunLifetimePoint] = []
     for row in rows:
         breakdown = row.breakdown if isinstance(row.breakdown, dict) else {}
-        cumulative = breakdown.get("cumulative_usage")
+        executions = breakdown.get("phase_executions")
+        phase_entries = (
+            [item for item in executions if isinstance(item, dict)]
+            if isinstance(executions, list)
+            else []
+        )
+        cumulative = (
+            phase_window_usage(phase_entries)
+            if phase_entries
+            else breakdown.get("cumulative_usage")
+        )
         if isinstance(cumulative, dict):
             for field in ("context_tokens", "output_tokens", "total_tokens"):
                 usage[field] += _integer(cumulative.get(field))
@@ -248,6 +259,7 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
             RunLifetimePoint(
                 run_id=row.run_id,
                 status=row.status,
+                workflow=row.workflow,
                 started_at=row.started_at,
                 duration_s=max(0.0, row.finished_at - row.started_at),
                 total_tokens=_integer(cumulative.get("total_tokens"))
@@ -262,7 +274,6 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
                     continue
                 model_load_count += 1
                 model_load_duration_s += _number(model_load.get("duration_s"))
-        executions = breakdown.get("phase_executions")
         if not isinstance(executions, list):
             continue
         for execution in executions:
@@ -272,6 +283,7 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
             activity["tool_calls"] += _integer(execution.get("tool_calls_total"))
             phase_name = execution.get("phase")
             if isinstance(phase_name, str):
+                execution_usage = phase_window_usage([execution])
                 phase = phases.setdefault(
                     phase_name,
                     {
@@ -287,7 +299,7 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
                     execution.get("duration_s")
                 )
                 phase["total_tokens"] = int(phase["total_tokens"]) + _integer(
-                    execution.get("total_tokens")
+                    execution_usage.get("total_tokens")
                 )
                 phase["tool_calls"] = int(phase["tool_calls"]) + _integer(
                     execution.get("tool_calls_total")
@@ -305,8 +317,9 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
             model = models[execution["model"]]
             model["calls"] += 1
             model["duration_s"] += _number(execution.get("duration_s"))
+            execution_usage = phase_window_usage([execution])
             for field in ("context_tokens", "output_tokens", "total_tokens"):
-                model[field] += _integer(execution.get(field))
+                model[field] += _integer(execution_usage.get(field))
             model["cost"] += _number(execution.get("cost"))
 
     model_rows = [

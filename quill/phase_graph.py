@@ -228,8 +228,6 @@ def route_counts(
             # Concurrent event ordering cannot encode either relationship by adjacency alone.
             counts[edge["key"]] = max(
                 0,
-                occurrences[edge["target"]]
-                - 1
-                - max(0, local_retries.get(edge["target"], 0)),
+                occurrences[edge["target"]] - 1 - max(0, local_retries.get(edge["target"], 0)),
             )
     return counts

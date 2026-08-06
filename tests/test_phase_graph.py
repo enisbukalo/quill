@@ -198,9 +198,7 @@ def test_direct_selective_gate_has_contract_forward_and_retry_edges() -> None:
 
     edges = {edge["key"]: edge for edge in build_phase_graph(phases)["edges"]}
 
-    assert edges["requirements->research_gate"]["contracts"] == [
-        "quill.research.requirements/v1"
-    ]
+    assert edges["requirements->research_gate"]["contracts"] == ["quill.research.requirements/v1"]
     assert edges["technical->research_gate"]["contracts"] == ["quill.research.technical/v1"]
     assert edges["research_gate->requirements"]["kinds"] == ["retry"]
     assert edges["research_gate->technical"]["kinds"] == ["retry"]
@@ -242,12 +240,8 @@ def test_data_dependencies_do_not_draw_shortcuts_across_intermediate_gate() -> N
         "technical->research_gate",
         "research_gate->plan",
     }
-    assert edges["requirements->research_gate"]["contracts"] == [
-        "quill.research.requirements/v1"
-    ]
-    assert edges["technical->research_gate"]["contracts"] == [
-        "quill.research.technical/v1"
-    ]
+    assert edges["requirements->research_gate"]["contracts"] == ["quill.research.requirements/v1"]
+    assert edges["technical->research_gate"]["contracts"] == ["quill.research.technical/v1"]
     assert edges["research_gate->plan"]["contracts"] == ["quill.review.findings/v1"]
 
 

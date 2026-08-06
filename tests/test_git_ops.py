@@ -607,9 +607,7 @@ def test_optional_check_policy_still_rejects_reported_nonpassing_checks(
 
 @pytest.mark.parametrize("rollup", [None, "invalid", ["invalid"]])
 def test_optional_check_policy_rejects_malformed_rollups(rollup: object) -> None:
-    runner = RecordingRunner(
-        {"number,state,isDraft": _merge_metadata(statusCheckRollup=rollup)}
-    )
+    runner = RecordingRunner({"number,state,isDraft": _merge_metadata(statusCheckRollup=rollup)})
 
     with pytest.raises(GitError, match="malformed CI check rollup"):
         GitOps(runner).merge_reviewed_pr(

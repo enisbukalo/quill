@@ -312,14 +312,18 @@ def prepare_contract_restart(
             staged_relative = staged_path.relative_to(stage_root)
             destination = prepare_output_path(target_dir, target_dir / staged_relative)
             if destination.exists() or destination.is_symlink():
-                raise RestartError(f"restart target already contains inherited path {staged_relative}")
+                raise RestartError(
+                    f"restart target already contains inherited path {staged_relative}"
+                )
             staged_path.replace(destination)
     except (OSError, ContractError) as exc:
         raise RestartError(f"could not stage restart contract closure: {exc}") from exc
     finally:
         shutil.rmtree(stage_root, ignore_errors=True)
 
-    entries = [_contract_seed_entry(path, contract) for path, contract in sorted(contract_paths.items())]
+    entries = [
+        _contract_seed_entry(path, contract) for path, contract in sorted(contract_paths.items())
+    ]
     artifact_entries = [
         {"path": path, "sha256": digest} for path, digest in sorted(artifacts.items())
     ]
@@ -409,8 +413,13 @@ def _contract_closure(
             raise RestartError(f"invalid latest restart contract for {contract_id}: {exc}") from exc
         if latest_contract.phase_id != contract_id:
             raise RestartError(f"latest restart contract identity mismatch for {contract_id}")
-        if latest_contract.run_id != source_run_id or latest_contract.workflow != config.workflow_id:
-            raise RestartError(f"latest restart contract source identity mismatch for {contract_id}")
+        if (
+            latest_contract.run_id != source_run_id
+            or latest_contract.workflow != config.workflow_id
+        ):
+            raise RestartError(
+                f"latest restart contract source identity mismatch for {contract_id}"
+            )
         identifier = f"{latest_contract.kind}/v{latest_contract.version}"
         if identifier not in phase.accepts_contracts:
             raise RestartError(
@@ -423,7 +432,9 @@ def _contract_closure(
         ).as_posix()
         exact = visit(attempt_path, expected_digest=latest_contract.digest)
         if exact.as_dict() != latest_contract.as_dict():
-            raise RestartError(f"latest restart pointer does not match exact attempt for {contract_id}")
+            raise RestartError(
+                f"latest restart pointer does not match exact attempt for {contract_id}"
+            )
     return result
 
 
@@ -525,7 +536,13 @@ def _refs_from_seed(
     seen_paths: set[str] = set()
     for row in raw_contracts:
         if not isinstance(row, dict) or set(row) != {
-            "phase_id", "kind", "version", "attempt", "path", "digest", "status"
+            "phase_id",
+            "kind",
+            "version",
+            "attempt",
+            "path",
+            "digest",
+            "status",
         }:
             raise RestartError("restart lineage contract entry is malformed")
         relative = row.get("path")
@@ -561,7 +578,11 @@ def _refs_from_seed(
     for contract in loaded_contracts.values():
         for upstream in contract.upstream:
             inherited = refs.get(upstream.phase_id)
-            if inherited is None or inherited.digest != upstream.digest or inherited.path != upstream.path:
+            if (
+                inherited is None
+                or inherited.digest != upstream.digest
+                or inherited.path != upstream.path
+            ):
                 raise RestartError(f"restart closure is missing upstream {upstream.phase_id}")
     phase = config.phase(start_phase)
     assert phase is not None

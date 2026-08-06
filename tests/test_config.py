@@ -481,9 +481,7 @@ def test_contract_kind_must_match_phase_type_and_mechanical_step(tmp_path: Path)
 
 
 def test_contract_edges_require_exact_acceptance_without_unused_types(tmp_path: Path) -> None:
-    missing = _FILLED.replace(
-        'accepts_contracts = ["quill.plan/v1"]', "accepts_contracts = []", 1
-    )
+    missing = _FILLED.replace('accepts_contracts = ["quill.plan/v1"]', "accepts_contracts = []", 1)
     _make_vault(tmp_path, missing, _DEFAULT_PERSONAS)
     with pytest.raises(ConfigInvalid, match="does not accept required contract.*quill.plan/v1"):
         load_config(tmp_path)
@@ -530,9 +528,7 @@ def test_contract_only_requires_is_ordered_known_and_not_duplicated(tmp_path: Pa
     with pytest.raises(ConfigInvalid, match="does not run before"):
         load_config(tmp_path)
 
-    overlap = _FILLED.replace(
-        'inputs = ["branch"]', 'inputs = ["branch"]\nrequires = ["branch"]'
-    )
+    overlap = _FILLED.replace('inputs = ["branch"]', 'inputs = ["branch"]\nrequires = ["branch"]')
     _make_vault(tmp_path, overlap, _DEFAULT_PERSONAS)
     with pytest.raises(ConfigInvalid, match="repeats semantic dependencies in requires"):
         load_config(tmp_path)
@@ -703,7 +699,7 @@ accepts_contracts = ["quill.research.synthesis/v1"]
         "technical",
     )
 
-    synthesis_block = '''[[phase]]
+    synthesis_block = """[[phase]]
 id = "research_synthesis"
 type = "producer"
 persona = "research.md"
@@ -713,7 +709,7 @@ synthesizes = ["requirements", "technical"]
 produces_contract = "quill.research.synthesis/v1"
 accepts_contracts = ["quill.research.requirements/v1", "quill.research.technical/v1", "quill.review.findings/v1"]
 
-'''
+"""
     direct = (
         body.replace(synthesis_block, "")
         .replace('against = ["research_synthesis"]', 'against = ["requirements", "technical"]')

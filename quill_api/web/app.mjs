@@ -1782,13 +1782,25 @@ function renderLifetimeStats() {
   if (!stats.recent_runs.length) {
     append(trends, element("div", "empty-state", "No completed run history is available yet."));
   } else {
-    const trendGrid = element("div", "trend-grid");
-    append(
-      trendGrid,
-      sparkline("Tokens per run", "Total tokens", stats.recent_runs, "total_tokens", formatNumber),
-      sparkline("Duration per run", "Elapsed time", stats.recent_runs, "duration_s", formatDuration),
-    );
-    trends.append(trendGrid);
+    const workflowTrends = element("div", "workflow-trends");
+    const runsByWorkflow = new Map();
+    for (const run of stats.recent_runs) {
+      const workflow = run.workflow || "ticket";
+      if (!runsByWorkflow.has(workflow)) runsByWorkflow.set(workflow, []);
+      runsByWorkflow.get(workflow).push(run);
+    }
+    for (const [workflow, runs] of runsByWorkflow) {
+      const group = element("section", "workflow-trend-group");
+      const trendGrid = element("div", "trend-grid");
+      append(
+        trendGrid,
+        sparkline("Tokens per run", "Total tokens", runs, "total_tokens", formatNumber),
+        sparkline("Duration per run", "Elapsed time", runs, "duration_s", formatDuration),
+      );
+      append(group, element("h4", "workflow-trend-title mono", workflow), trendGrid);
+      workflowTrends.append(group);
+    }
+    trends.append(workflowTrends);
   }
 
   const phases = statCard("Phase Time", "stats-phases");

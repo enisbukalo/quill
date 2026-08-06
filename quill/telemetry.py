@@ -13,7 +13,7 @@ from quill.config import LOCAL_BACKENDS
 from quill.eventlog import EVENT_LOG_NAME
 from quill.spawn_io import pi_child_usage
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def token_cost(
@@ -85,11 +85,13 @@ def build_breakdown(
     for entry in phase_executions:
         if entry["phase"] in self_check_phases and entry["self_check_status"] == "not_run":
             entry["self_check_status"] = "enabled"
-    # Re-price each execution from its token total for a self-hosted run; a hosted run keeps the
-    # CLI's cost. Do this before summing so cumulative cost matches the per-phase entries.
+    # Re-price each execution from its occupied context window for a self-hosted run; a hosted run
+    # keeps the CLI's cost. The dashboard's accounting contract is phase-window based: repeatedly
+    # processing an expanding prompt inside one phase must not count the same conversation tokens
+    # again on every model turn.
     for entry in (*phase_executions, *legacy_observations):
         entry["cost"] = token_cost(
-            entry.get("total_tokens", 0),
+            entry.get("context_window_tokens", entry.get("total_tokens", 0)),
             entry.get("cost", 0.0),
             backend=backend,
             usd_per_1m=usd_per_1m,
@@ -674,24 +676,40 @@ def _has_usage(usage: dict[str, float | int]) -> bool:
 
 
 def _sum_final_usage(entries: list[dict[str, Any]]) -> dict[str, float | int]:
-    """Sum one final snapshot per independent phase execution."""
+    """Sum the occupied context window reported by each phase execution exactly once.
+
+    A coding agent makes several model requests while a phase runs. Later prompts contain most of
+    the earlier prompts, so summing request-level input usage repeatedly counts the same context.
+    The phase table intentionally shows ``context_window_tokens`` instead. Run and lifetime totals
+    must derive from that same field so every displayed level reconciles.
+
+    ``output_tokens`` is the phase's generated output, capped to its occupied window. The context
+    portion is the remainder, making ``context + output == total == displayed phase tokens``.
+    """
     total = _empty_usage()
-    field_map = {
-        "input_tokens": "context_tokens",
-        "output_tokens": "output_tokens",
-        "reasoning_tokens": "reasoning_tokens",
-        "cache_read_tokens": "cache_read_tokens",
-        "cache_write_tokens": "cache_write_tokens",
-        "total_tokens": "total_tokens",
-        "context_window_tokens": "context_window_tokens",
-        "cost": "cost",
-    }
     for entry in entries:
-        _add_usage(
-            total,
-            {usage_key: entry.get(entry_key, 0) for usage_key, entry_key in field_map.items()},
+        raw_window = entry.get("context_window_tokens")
+        window = max(
+            0,
+            _number(raw_window)
+            if isinstance(raw_window, (int, float)) and not isinstance(raw_window, bool)
+            else _number(entry.get("total_tokens")),
         )
+        output = min(window, max(0, _number(entry.get("output_tokens"))))
+        total["input_tokens"] += window - output
+        total["output_tokens"] += output
+        total["total_tokens"] += window
+        total["context_window_tokens"] += window
+        total["reasoning_tokens"] += max(0, _number(entry.get("reasoning_tokens")))
+        total["cache_read_tokens"] += max(0, _number(entry.get("cache_read_tokens")))
+        total["cache_write_tokens"] += max(0, _number(entry.get("cache_write_tokens")))
+        total["cost"] += max(0.0, _float_number(entry.get("cost")))
     return {"context_tokens": total.pop("input_tokens"), **total}
+
+
+def phase_window_usage(entries: list[dict[str, Any]]) -> dict[str, float | int]:
+    """Public phase-window aggregate used by live and lifetime dashboard projections."""
+    return _sum_final_usage(entries)
 
 
 def _number(value: Any) -> int:

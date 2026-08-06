@@ -1822,6 +1822,11 @@ test("queue navigation, grouped selection, SSE, and overview snapshot are wired"
   assert.match(styles, /\.stats-trends \{ grid-column: 1 \/ -1; \}/);
   assert.match(styles, /\.stats-project-queue \{ grid-column: span 3; \}/);
   assert.match(styles, /\.trend-grid \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(app, /const runsByWorkflow = new Map\(\)/);
+  assert.match(app, /const workflow = run\.workflow \|\| "ticket"/);
+  assert.match(app, /workflow-trend-group/);
+  assert.match(app, /sparkline\("Tokens per run", "Total tokens", runs/);
+  assert.match(app, /sparkline\("Duration per run", "Elapsed time", runs/);
   assert.doesNotMatch(app, /sparkline-axis-title|Completed runs \(oldest → newest\)/);
   assert.match(app, /left: sparklineLeftMargin\(yTicks\.map/);
   assert.match(app, /\[plot\.left, "Run 1", "start"\]/);

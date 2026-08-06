@@ -282,6 +282,7 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
         run_id="completed",
         ticket=7,
         repo="me/proj",
+        workflow="pr_review",
         status=RunStatus.DONE,
         started_at=1.0,
     )
@@ -314,6 +315,7 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
                     "context_tokens": 100,
                     "output_tokens": 25,
                     "total_tokens": 125,
+                    "context_window_tokens": 80,
                     "cost": 0.75,
                     "tool_calls_total": 4,
                     "self_check_status": "passed",
@@ -336,7 +338,9 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
     assert body["failed_runs"] == 1
     assert body["repositories"] == 1
     assert body["tickets"] == 2
-    assert body["total_tokens"] == 125
+    assert body["context_tokens"] == 55
+    assert body["output_tokens"] == 25
+    assert body["total_tokens"] == 80
     assert body["cost"] == 0.75
     assert body["duration_s"] > 0
     assert body["phase_executions"] == 1
@@ -351,20 +355,21 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
             "label": "implement",
             "executions": 1,
             "duration_s": 12.5,
-            "total_tokens": 125,
+            "total_tokens": 80,
             "tool_calls": 4,
         }
     ]
     assert [point["run_id"] for point in body["recent_runs"]] == ["completed", "failed"]
-    assert body["recent_runs"][0]["total_tokens"] == 125
+    assert body["recent_runs"][0]["total_tokens"] == 80
+    assert body["recent_runs"][0]["workflow"] == "pr_review"
     assert body["models"] == [
         {
             "model": "gemma-test",
             "calls": 1,
             "duration_s": 12.5,
-            "context_tokens": 100,
+            "context_tokens": 55,
             "output_tokens": 25,
-            "total_tokens": 125,
+            "total_tokens": 80,
             "cost": 0.75,
         }
     ]
@@ -475,9 +480,9 @@ def test_failed_run_can_restart_from_recorded_phase(
                 ),
                 json.dumps(
                     {
-                            "type": "run_plan",
-                            "ts": 1.0,
-                            "phase_set_hash": "test-phase-set",
+                        "type": "run_plan",
+                        "ts": 1.0,
+                        "phase_set_hash": "test-phase-set",
                         "phase_graph": {
                             "nodes": [
                                 {

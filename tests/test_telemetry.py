@@ -9,8 +9,46 @@ from quill.telemetry import (
     build_breakdown,
     cumulative_live_usage,
     latest_usage,
+    phase_window_usage,
     token_cost,
 )
+
+
+def test_phase_window_usage_reconciles_cards_with_displayed_phase_tokens() -> None:
+    usage = phase_window_usage(
+        [
+            {
+                "context_tokens": 500_000,
+                "output_tokens": 30_000,
+                "total_tokens": 530_000,
+                "context_window_tokens": 150_817,
+            },
+            {
+                "context_tokens": 600_000,
+                "output_tokens": 25_000,
+                "total_tokens": 625_000,
+                "context_window_tokens": 171_109,
+            },
+            {
+                "context_tokens": 450_000,
+                "output_tokens": 20_000,
+                "total_tokens": 470_000,
+                "context_window_tokens": 138_481,
+            },
+            {
+                "context_tokens": 325_264,
+                "output_tokens": 10_587,
+                "total_tokens": 335_851,
+                "context_window_tokens": 96_340,
+            },
+        ]
+    )
+
+    assert usage["context_tokens"] == 471_160
+    assert usage["output_tokens"] == 85_587
+    assert usage["total_tokens"] == 556_747
+    assert usage["context_window_tokens"] == 556_747
+    assert usage["context_tokens"] + usage["output_tokens"] == usage["total_tokens"]
 
 
 def test_build_breakdown_returns_compact_ordered_phase_statistics(tmp_path: Path) -> None:
@@ -77,7 +115,7 @@ def test_build_breakdown_returns_compact_ordered_phase_statistics(tmp_path: Path
         },
     )
 
-    assert result["schema_version"] == 14
+    assert result["schema_version"] == 15
     assert list(result) == [
         "status",
         "run_id",
@@ -123,7 +161,7 @@ def test_build_breakdown_returns_compact_ordered_phase_statistics(tmp_path: Path
         "contract_digest": None,
     }
     assert result["cumulative_usage"] == {
-        "context_tokens": 10,
+        "context_tokens": 16,
         "output_tokens": 4,
         "reasoning_tokens": 2,
         "cache_read_tokens": 3,
@@ -226,7 +264,7 @@ def test_durable_event_history_is_authoritative_and_preserves_active_phase(tmp_p
         },
     )
 
-    assert result["schema_version"] == 14
+    assert result["schema_version"] == 15
     assert [item["phase"] for item in result["phase_executions"]] == ["plan", "review_plan"]
     assert result["phase_executions"][0]["tool_calls_by_name"] == {"read": 2}
     assert result["phase_executions"][1]["verdict"] is None
@@ -354,7 +392,7 @@ def test_same_pi_session_continuation_does_not_double_count_context_window(tmp_p
 
     assert result["phase_executions"][0]["context_tokens"] == 30
     assert result["phase_executions"][0]["context_window_tokens"] == 20
-    assert result["cumulative_usage"]["total_tokens"] == 30
+    assert result["cumulative_usage"]["total_tokens"] == 20
     assert result["completeness"] == {"complete": True, "warnings": []}
 
 

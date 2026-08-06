@@ -873,7 +873,13 @@ def phase_contract_dependencies(config: QuillfolioConfig) -> dict[str, tuple[str
     """
     dependencies: dict[str, tuple[str, ...]] = {}
     for phase in config.phases:
-        ordered = (*phase.inputs, *phase.synthesizes, *phase.against, *phase.reconciles, *phase.requires)
+        ordered = (
+            *phase.inputs,
+            *phase.synthesizes,
+            *phase.against,
+            *phase.reconciles,
+            *phase.requires,
+        )
         dependencies[phase.id] = tuple(dict.fromkeys(ordered))
     return dependencies
 
@@ -949,7 +955,9 @@ def _validate_contract_edges(config: QuillfolioConfig) -> None:
                     f"phase '{phase.id}' requires '{target}', which does not run before it."
                 )
 
-    incoming: dict[str, list[str]] = {phase.id: list(dependencies[phase.id]) for phase in config.phases}
+    incoming: dict[str, list[str]] = {
+        phase.id: list(dependencies[phase.id]) for phase in config.phases
+    }
     # A blocking gate's validated result is consumed by every revise target. Selective lanes are the
     # actual consumers even in synthesis-backed mode; the serial synthesis also consumes the gate
     # through on_block and the selected lane contracts through synthesizes.

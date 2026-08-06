@@ -100,6 +100,18 @@ from quill.runctx import MODE_REVIEW, MODE_UPDATE, RunContext
 
 _STRUCTURED_REPAIR_ATTEMPTS = 3
 
+
+def _review_finding_item_schema() -> object:
+    schema = default_catalog().resolve("quill.review.findings/v1").payload_schema
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        raise RuntimeError("review findings contract has no properties schema")
+    findings = properties.get("findings")
+    if not isinstance(findings, dict) or "items" not in findings:
+        raise RuntimeError("review findings contract has no finding item schema")
+    return cast(dict[str, object], findings)["items"]
+
+
 _FINDINGS_DELTA_SCHEMA: dict[str, object] = {
     "type": "object",
     "required": ["schema_version", "dispositions", "new_findings"],
@@ -121,9 +133,7 @@ _FINDINGS_DELTA_SCHEMA: dict[str, object] = {
         },
         "new_findings": {
             "type": "array",
-            "items": default_catalog()
-            .resolve("quill.review.findings/v1")
-            .payload_schema["properties"]["findings"]["items"],  # type: ignore[index]
+            "items": _review_finding_item_schema(),
         },
     },
 }
@@ -939,9 +949,7 @@ def _run_reviewer(
                 else phase
             )
             findings = _findings_name(phase, model)
-            work_artifact = (
-                _review_notes_name(lane, model) if phase.produces_contract else findings
-            )
+            work_artifact = _review_notes_name(lane, model) if phase.produces_contract else findings
             if phase.produces_contract:
                 ctx.phase_call_counts[lane.id] = ctx.phase_call_counts.get(phase.id, 1)
             result = _spawn_llm(
@@ -1061,9 +1069,7 @@ def _run_concurrent_audits(
             return PhaseResult(Outcome.CRASH, "stop requested before audit started")
         started = _emit_started(ctx, lane)
         findings = _audit_findings_name(phase, audit)
-        work_artifact = (
-            _review_notes_name(lane, audit.id) if phase.produces_contract else findings
-        )
+        work_artifact = _review_notes_name(lane, audit.id) if phase.produces_contract else findings
         task = _review_task(
             ctx,
             lane,
@@ -1133,9 +1139,7 @@ def _run_finalizer(ctx: RunContext, phase: PhaseDef) -> PhaseResult:
     started = _emit_started(ctx, phase)
     artifact = phase.artifact or f"{phase.id}.md"
     work_artifact = (
-        _review_notes_name(phase, phase.model or phase.id)
-        if phase.produces_contract
-        else artifact
+        _review_notes_name(phase, phase.model or phase.id) if phase.produces_contract else artifact
     )
     initial = _spawn_llm(ctx, phase, model=phase.model, task=_finalizer_task(ctx, phase))
     initial = _repair_artifact_failure(
@@ -1307,6 +1311,7 @@ def _require_pr_review_reconciliation(
 
 def _run_mechanical(ctx: RunContext, phase: PhaseDef) -> PhaseResult:
     """Dispatch a mechanical phase; gate build_test (and any gated mechanical) on BLOCK."""
+
     def execute() -> PhaseResult:
         return _finalize_mechanical_contract(
             ctx,
@@ -1438,9 +1443,7 @@ def _gate(
 
     def revise(attempt: int) -> PhaseResult:
         ctx.gate_rounds_spent[phase.id] = spent + attempt
-        ctx.on_event(
-            events.retry(phase.id, spent + attempt, configured, scope="gate")
-        )
+        ctx.on_event(events.retry(phase.id, spent + attempt, configured, scope="gate"))
         if gate_ref := ctx.contracts.get(phase.id):
             for target in (*phase.selective_on_block, *phase.on_block):
                 ctx.retry_contracts[target] = gate_ref
@@ -2074,7 +2077,9 @@ def _self_check_prompt(ctx: RunContext, phase: PhaseDef, *, artifact: str) -> st
             "effect merely to check it; make corrections only within the original task's authority."
         )
     else:
-        authority = "Make corrections only within the mutation authority of the original phase task."
+        authority = (
+            "Make corrections only within the mutation authority of the original phase task."
+        )
     location = (
         f"Your artifact for this phase is at {ctx.artifact_path(artifact)}. This is the only "
         f"self-check iteration for this phase attempt. It is the natural work artifact. {authority} "
@@ -2100,11 +2105,7 @@ def _self_check_receipt_repair_prompt(
     problem: str,
 ) -> str:
     """Request only the missing terminal receipt after completed self-check work."""
-    expected = (
-        "`PASS:`, `BLOCK:`, or `FAILED:`"
-        if phase.gates
-        else "`DONE:` or `FAILED:`"
-    )
+    expected = "`PASS:`, `BLOCK:`, or `FAILED:`" if phase.gates else "`DONE:` or `FAILED:`"
     return (
         f"Quill could not parse the terminal receipt from your completed self-check: {problem}. "
         f"The self-check artifact is mechanically present at {ctx.artifact_path(artifact)}. "
@@ -2238,10 +2239,7 @@ def _finalize_llm_contract(
     try:
         staging = prepare_output_path(
             ctx.run_dir,
-            ctx.run_dir
-            / ".contract-staging"
-            / safe_phase_id(phase.id)
-            / f"attempt-{attempt}.json",
+            ctx.run_dir / ".contract-staging" / safe_phase_id(phase.id) / f"attempt-{attempt}.json",
         )
     except ContractError as exc:
         return PhaseResult(Outcome.GARBAGE, f"contract staging path is unsafe: {exc}")
@@ -2514,8 +2512,8 @@ def _contract_projection_prompt(
         f"{staging}. The payload must match this exact schema: {schema}. Copy only facts supported "
         "by the frozen artifact. Do not research, decide, edit the repository, or edit the frozen "
         "artifact. Do not add Markdown or prose. If a required semantic fact is absent, instead "
-        "write exactly {\"contract_status\":\"INCOMPLETE\",\"missing\":[{\"field\":\"<field>\","
-        "\"reason\":\"<why absent>\",\"evidence\":\"<artifact anchor>\"}]}. Never invent the "
+        'write exactly {"contract_status":"INCOMPLETE","missing":[{"field":"<field>",'
+        '"reason":"<why absent>","evidence":"<artifact anchor>"}]}. Never invent the '
         "missing fact. Then emit the receipt line required by the original task."
     )
 
@@ -2523,19 +2521,20 @@ def _contract_projection_prompt(
 def _projection_payload(raw: object) -> tuple[ContractStatus, object]:
     if isinstance(raw, dict) and "contract_status" in raw:
         if set(raw) != {"contract_status", "missing"} or raw.get("contract_status") != "INCOMPLETE":
-            raise ContractError("projection contract_status form must be exactly INCOMPLETE + missing")
+            raise ContractError(
+                "projection contract_status form must be exactly INCOMPLETE + missing"
+            )
         return ContractStatus.INCOMPLETE, {"missing": raw.get("missing")}
     return ContractStatus.COMPLETE, raw
 
 
-def _enrich_delivery_projection(
-    ctx: RunContext, staging: Path, result: PhaseResult
-) -> PhaseResult:
+def _enrich_delivery_projection(ctx: RunContext, staging: Path, result: PhaseResult) -> PhaseResult:
     """Replace model-authored delivery identity with Git/GitHub-observed authoritative fields."""
     try:
         raw = strict_json_loads(staging.read_text(encoding="utf-8"))
         if not isinstance(raw, dict) or set(raw) != {"summary", "unresolved"}:
             raise ContractError("delivery projection must contain only summary and unresolved")
+        raw_mapping = cast(dict[str, object], raw)
         git = ctx.deps.git
         if git is None:
             raise ContractError("delivery identity is unavailable without Git/GitHub integration")
@@ -2562,8 +2561,8 @@ def _enrich_delivery_projection(
         if not clean:
             raise ContractError("delivery left the repository worktree dirty")
         enriched = {
-            "summary": raw["summary"],
-            "unresolved": raw["unresolved"],
+            "summary": raw_mapping["summary"],
+            "unresolved": raw_mapping["unresolved"],
             "branch": branch,
             "local_sha": local_sha,
             "remote_sha": remote_sha,
@@ -2603,9 +2602,7 @@ def _projection_mutation_error(
 def _upstream_refs(ctx: RunContext, phase: PhaseDef) -> tuple[ContractRef, ...]:
     dependencies = _phase_dependencies(ctx, phase)
     forward = tuple(
-        ref
-        for target in dependencies
-        for ref in _dependency_contract_refs(ctx, target)
+        ref for target in dependencies for ref in _dependency_contract_refs(ctx, target)
     )
     retry = ctx.retry_contracts.get(phase.id)
     return (*forward, retry) if retry is not None else forward
@@ -2677,7 +2674,9 @@ def _validate_upstream_contracts(ctx: RunContext, phase: PhaseDef) -> PhaseResul
         expected_ids = _dependency_contract_ids(ctx, target)
         refs = _dependency_contract_refs(ctx, target)
         if len(refs) != len(expected_ids):
-            missing = [contract_id for contract_id in expected_ids if contract_id not in ctx.contracts]
+            missing = [
+                contract_id for contract_id in expected_ids if contract_id not in ctx.contracts
+            ]
             return PhaseResult(
                 Outcome.GARBAGE,
                 f"phase '{phase.id}' is missing required validated contract(s) from '{target}': "
@@ -3481,8 +3480,7 @@ def _prior_notes_instruction(
     if not blockers:
         return ""
     listed = "; ".join(
-        f"{finding.id} ({finding.severity}): {finding.title} — required: "
-        f"{finding.required_outcome}"
+        f"{finding.id} ({finding.severity}): {finding.title} — required: {finding.required_outcome}"
         for finding in blockers
     )
     gating = (

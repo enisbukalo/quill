@@ -383,6 +383,7 @@ class PhaseLifetimeStats(BaseModel):
 class RunLifetimePoint(BaseModel):
     run_id: str
     status: str
+    workflow: str = "ticket"
     started_at: float = 0.0
     duration_s: float = 0.0
     total_tokens: int = 0

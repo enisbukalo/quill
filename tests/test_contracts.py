@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -81,18 +82,23 @@ def _example_for_schema(schema: dict[str, object]) -> object:
         required = schema.get("required", [])
         assert isinstance(properties, dict)
         assert isinstance(required, list)
+        property_schemas = cast(dict[str, object], properties)
         return {
-            name: _example_for_schema(properties[name])
+            name: _example_for_schema(cast(dict[str, object], property_schemas[name]))
             for name in required
-            if isinstance(name, str) and isinstance(properties.get(name), dict)
+            if isinstance(name, str) and isinstance(property_schemas.get(name), dict)
         }
     if kind == "array":
         items = schema["items"]
         assert isinstance(items, dict)
-        count = max(1, int(schema.get("min_items", 0)))
-        return [_example_for_schema(items) for _ in range(count)]
+        minimum = schema.get("min_items", 0)
+        assert isinstance(minimum, int)
+        count = max(1, minimum)
+        return [_example_for_schema(cast(dict[str, object], items)) for _ in range(count)]
     if kind == "string":
-        return "x" * max(1, int(schema.get("min_length", 0)))
+        minimum = schema.get("min_length", 0)
+        assert isinstance(minimum, int)
+        return "x" * max(1, minimum)
     if kind in {"integer", "number"}:
         return 0
     if kind == "boolean":
@@ -102,7 +108,9 @@ def _example_for_schema(schema: dict[str, object]) -> object:
     raise AssertionError(f"unsupported test schema kind: {kind!r}")
 
 
-def test_every_packaged_spec_accepts_a_representative_payload_and_enforces_required_fields() -> None:
+def test_every_packaged_spec_accepts_a_representative_payload_and_enforces_required_fields() -> (
+    None
+):
     catalog = ContractCatalog()
     for identifier in catalog.identifiers:
         spec = catalog.resolve(identifier)
@@ -180,9 +188,7 @@ def test_catalog_rejects_unknown_top_level_and_schema_keys(tmp_path: Path) -> No
         (lambda data: data["payload"].update({"min_length": -1}), "non-negative"),
     ],
 )
-def test_catalog_rejects_malformed_schema(
-    tmp_path: Path, mutation, pattern: str
-) -> None:
+def test_catalog_rejects_malformed_schema(tmp_path: Path, mutation, pattern: str) -> None:
     root = tmp_path / "specs"
     root.mkdir()
     data = json.loads((CONTRACT_SPECS_DIR / "plan.json").read_text(encoding="utf-8"))

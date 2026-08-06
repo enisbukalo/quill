@@ -119,9 +119,7 @@ def run_pipeline(
         checkpoint_phase=checkpoint_phase,
     )
     if start_phase is not None and (run_dir / SEED_NAME).is_file():
-        ctx.contracts.update(
-            restart_contract_refs(run_dir, config=config, start_phase=start_phase)
-        )
+        ctx.contracts.update(restart_contract_refs(run_dir, config=config, start_phase=start_phase))
     return engine.run_phases(ctx, start_phase=start_phase)
 
 

@@ -7,6 +7,7 @@ import re
 import threading
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -572,9 +573,7 @@ def test_direct_selective_research_gate_reruns_only_owned_lane_without_synthesis
                 encoding="utf-8",
             )
 
-    spawn = DirectSpawn(
-        {"research_gate": ["BLOCK: missing evidence", "PASS: evidence verified"]}
-    )
+    spawn = DirectSpawn({"research_gate": ["BLOCK: missing evidence", "PASS: evidence verified"]})
     ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
     ctx.deps.session_capacity = lambda _model: 3
 
@@ -3502,7 +3501,8 @@ def test_contract_producer_is_schema_blind_until_projection_and_publishes(
     tmp_path: Path,
 ) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    spawn = _Spawn({"plan": "DONE: planned"})
+    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), spawn, _FakeLoader())
     ctx.phase_checkpoints["plan"] = "c" * 40
     continuations: list[tuple[str, float]] = []
 
@@ -3528,7 +3528,7 @@ def test_contract_producer_is_schema_blind_until_projection_and_publishes(
     assert result.outcome is Outcome.DONE
     assert result.contract_ref is not None
     assert result.contract_ref == ctx.contracts["plan"]
-    initial_prompt = ctx.deps.spawn.calls[0][2]  # type: ignore[attr-defined]
+    initial_prompt = spawn.calls[0][2]
     assert "schema" not in initial_prompt.lower()
     assert "machine-readable" not in initial_prompt.lower()
     assert len(continuations) == 2
@@ -3588,15 +3588,16 @@ def test_mechanical_phase_publishes_exact_typed_command_evidence(tmp_path: Path)
         default_catalog(),
         run_dir=ctx.run_dir,
     )
-    commands = contract.payload["commands"]  # type: ignore[index]
+    payload = cast(dict[str, object], contract.payload)
+    commands = cast(list[dict[str, object]], payload["commands"])
     assert commands[0]["command"] == "make"
     assert commands[0]["exit_code"] == 0
     assert commands[1]["exit_code"] == -1
     assert commands[1]["timed_out"] is True
     for command in commands:
-        log = ctx.run_dir / command["log"]
+        log = ctx.run_dir / cast(str, command["log"])
         assert log.is_file()
-        assert len(command["log_sha256"]) == 64
+        assert len(cast(str, command["log_sha256"])) == 64
     assert _ev_types(ctx).count("contract_validated") == 1
     assert _ev_types(ctx).count("contract_published") == 1
 
@@ -3625,7 +3626,9 @@ def test_unavailable_mechanical_phase_publishes_unavailable_not_pass(tmp_path: P
 
 def test_contract_self_check_without_continuation_support_fails_closed(tmp_path: Path) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
 
     result = engine._run_producer(ctx, phase)
 
@@ -3638,7 +3641,9 @@ def test_contract_self_check_repairs_only_a_missing_receipt_without_restarting_p
     tmp_path: Path,
 ) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
     prompts: list[str] = []
 
     def repair(
@@ -3680,7 +3685,9 @@ def test_contract_self_check_preserves_valid_work_when_receipt_repair_is_still_g
     tmp_path: Path,
 ) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
     prompts: list[str] = []
 
     def repair(
@@ -3716,7 +3723,9 @@ def test_contract_self_check_does_not_preserve_work_if_receipt_repair_removes_ar
     tmp_path: Path,
 ) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
     calls = 0
 
     def repair(
@@ -3749,7 +3758,9 @@ def test_contract_self_check_does_not_preserve_work_if_receipt_repair_removes_ar
 
 def test_projection_cannot_mutate_frozen_natural_artifact(tmp_path: Path) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
 
     def repair(
         agent: str,
@@ -3777,7 +3788,9 @@ def test_projection_cannot_mutate_frozen_natural_artifact(tmp_path: Path) -> Non
 
 def test_failed_projection_continuation_still_rejects_repository_mutation(tmp_path: Path) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
 
     def repair(
         agent: str,
@@ -3805,7 +3818,9 @@ def test_failed_projection_continuation_still_rejects_repository_mutation(tmp_pa
 
 def test_invalid_projection_gets_bounded_projection_only_repair(tmp_path: Path) -> None:
     phase = _contract_producer()
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"plan": "DONE: planned"}), _FakeLoader()
+    )
     projection_prompts: list[str] = []
 
     def repair(
@@ -3904,7 +3919,9 @@ def test_delivery_projection_exposes_only_semantics_and_binds_observed_identity(
         self_check=True,
         produces_contract="quill.delivery/v1",
     )
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"commit": "DONE: delivered"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"commit": "DONE: delivered"}), _FakeLoader()
+    )
     ctx.branch = "feature/ticket-33"
 
     class DeliveryGit:
@@ -3925,7 +3942,7 @@ def test_delivery_projection_exposes_only_semantics_and_binds_observed_identity(
         def workspace_status(self) -> str:
             return ""
 
-    ctx.deps.git = DeliveryGit()  # type: ignore[assignment]
+    ctx.deps.git = cast(Any, DeliveryGit())
     projections: list[str] = []
 
     def repair(
@@ -3996,7 +4013,9 @@ def test_delivery_projection_rejects_unverified_identity(
         self_check=True,
         produces_contract="quill.delivery/v1",
     )
-    ctx = _ctx(tmp_path, _config(tmp_path, [phase]), _Spawn({"commit": "DONE: delivered"}), _FakeLoader())
+    ctx = _ctx(
+        tmp_path, _config(tmp_path, [phase]), _Spawn({"commit": "DONE: delivered"}), _FakeLoader()
+    )
     ctx.branch = "feature/ticket-33"
 
     class DeliveryGit:
@@ -4015,7 +4034,7 @@ def test_delivery_projection_rejects_unverified_identity(
         def workspace_status(self) -> str:
             return workspace
 
-    ctx.deps.git = DeliveryGit()  # type: ignore[assignment]
+    ctx.deps.git = cast(Any, DeliveryGit())
 
     def repair(
         agent: str,

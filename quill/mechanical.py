@@ -447,7 +447,12 @@ def step_pr_head_guard(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -
             ctx,
             phase,
             ContractStatus.UNAVAILABLE,
-            {"pr": ctx.pr_number or 0, "expected": ctx.pr_head_sha, "observed": "", "matches": False},
+            {
+                "pr": ctx.pr_number or 0,
+                "expected": ctx.pr_head_sha,
+                "observed": "",
+                "matches": False,
+            },
         )
         return PhaseResult(Outcome.FAILED, "update head guard is missing PR boundary metadata")
     try:
@@ -465,7 +470,12 @@ def step_pr_head_guard(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -
             ctx,
             phase,
             ContractStatus.COMPLETE,
-            {"pr": ctx.pr_number, "expected": ctx.pr_head_sha, "observed": current, "matches": False},
+            {
+                "pr": ctx.pr_number,
+                "expected": ctx.pr_head_sha,
+                "observed": current,
+                "matches": False,
+            },
         )
         return PhaseResult(
             Outcome.NEEDS_DECISION,

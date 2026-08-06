@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -137,7 +138,7 @@ def _spawn_returning(
         _write_projection_for(agent, prompt, receipt)
         return json.dumps({"type": "text", "text": receipt})
 
-    spawn.repair_session = repair  # type: ignore[attr-defined]
+    cast(Any, spawn).repair_session = repair
 
     return spawn
 
@@ -224,11 +225,11 @@ def _write_projection_for(agent: str, prompt: str, receipt: str) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _with_repair(spawn: Spawner, **kwargs: object) -> PipelineDeps:
+def _with_repair(spawn: Spawner, **kwargs: Any) -> PipelineDeps:
     return PipelineDeps(
         spawn=spawn,
-        session_repair=spawn.repair_session,  # type: ignore[attr-defined]
-        **kwargs,  # type: ignore[arg-type]
+        session_repair=cast(Any, spawn).repair_session,
+        **kwargs,
     )
 
 
@@ -394,7 +395,7 @@ def test_plan_gate_revise_then_verify_passes(repo_dir: Path) -> None:
         _write_projection_for(agent, prompt, text)
         return json.dumps({"type": "text", "text": text})
 
-    spawn.repair_session = repair  # type: ignore[attr-defined]
+    cast(Any, spawn).repair_session = repair
     deps = _with_repair(
         loader=FakeLoader(),
         spawn=spawn,
@@ -440,9 +441,7 @@ def test_needs_decision_halts(repo_dir: Path) -> None:
 
 def test_should_stop_halts(repo_dir: Path) -> None:
     spawn = _spawn_returning(repo_dir, {})
-    deps = _with_repair(
-        loader=FakeLoader(), spawn=spawn, git=_git_with_ticket()
-    )
+    deps = _with_repair(loader=FakeLoader(), spawn=spawn, git=_git_with_ticket())
     final = run_pipeline(1, directory=str(repo_dir), deps=deps, should_stop=lambda: True)
     assert final["type"] == events.RUN_HALTED
 
