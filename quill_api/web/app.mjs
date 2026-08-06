@@ -650,6 +650,18 @@ function connectEvents() {
       return;
     }
     updateConnection("live");
+    if (event.type === "repositories_refreshed") {
+      // Repository discovery answers from cache and rescans behind the response, so a client that
+      // read during a cold window is holding a list that never gets corrected on its own. The
+      // queue page picks its repository out of `project_board` metadata, so an empty first read
+      // left it with nothing selectable and no way back short of navigating to Runs and returning.
+      refreshGitHubRepositories({ quiet: true }).then(() => {
+        if (state.route.section === "queue") {
+          refreshQueueCandidates(state.queuePage.repo, { quiet: true });
+        }
+      });
+      return;
+    }
     if (event.type === "queue_updated") state.queue = event.queue || state.queue;
     if (event.type === "project_queue_updated") {
       state.projectQueue = event.project_queue || state.projectQueue;

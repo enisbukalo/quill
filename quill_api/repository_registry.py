@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import tomllib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -52,8 +53,15 @@ class _ConfigMetadata:
 class ConfiguredRepositoryRegistry:
     """Last complete scan of source repositories containing a root config file."""
 
-    def __init__(self, cache_path: Path) -> None:
+    def __init__(
+        self,
+        cache_path: Path,
+        on_refreshed: Callable[[], None] | None = None,
+    ) -> None:
         self.cache_path = cache_path
+        #: Called from the background refresh thread after a scan that changed the snapshot.
+        #: The registry stays unaware of the event bus; the caller decides what to notify.
+        self._on_refreshed = on_refreshed
         self._lock = threading.Lock()
         self._repositories: tuple[ConfiguredRepository, ...] = ()
         self._scanned_at: float | None = None
@@ -130,9 +138,26 @@ class ConfiguredRepositoryRegistry:
         thread.start()
 
     def _refresh_safely(self) -> None:
+        """Rescan in the background and announce a snapshot that actually changed.
+
+        Reads serve the cached snapshot immediately, so without this notification a client that
+        fetched during a cold or stale window kept the old list until it happened to refetch.
+        The queue page in particular selects its repository from ``project_board`` metadata, so
+        an empty first response left it with no selectable repository and an empty table.
+
+        Only a changed snapshot notifies: a periodic rescan that finds nothing new must not make
+        every connected client refetch.
+        """
+        before = self.repositories
         try:
             self.refresh()
         except RepositoryScanError:
+            return
+        if self._on_refreshed is None or self.repositories == before:
+            return
+        try:
+            self._on_refreshed()
+        except Exception:  # noqa: BLE001 - a listener must never kill the refresh thread
             pass
 
     def _load(self) -> None:

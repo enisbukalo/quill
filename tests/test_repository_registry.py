@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from quill_api.repository_registry import (
+    ConfiguredRepository,
     ConfiguredRepositoryRegistry,
+    RepositoryScanError,
     _config_metadata,
     _configured,
 )
@@ -246,3 +248,84 @@ def test_never_scanned_registry_rescans(tmp_path: Path, monkeypatch: pytest.Monk
     registry._scanned_at = None
     registry.refresh_if_stale()
     assert started == [True]
+
+
+def _repository(name: str, board: str | None = "Board") -> ConfiguredRepository:
+    return ConfiguredRepository(
+        name=name,
+        visibility="private",
+        updated_at="2026-01-01T00:00:00Z",
+        default_branch="main",
+        config_sha="sha",
+        project_board=board,
+    )
+
+
+def test_changed_snapshot_notifies_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reads answer from cache, so a client that fetched during a cold window holds a list that
+    nothing corrects. The queue page picks its repository out of ``project_board`` metadata, so an
+    empty first read left it with nothing selectable until the user navigated away and back."""
+    notified: list[bool] = []
+    registry = ConfiguredRepositoryRegistry(
+        tmp_path / "cache.json", on_refreshed=lambda: notified.append(True)
+    )
+    scanned = (_repository("o/one"),)
+    monkeypatch.setattr(
+        registry, "refresh", lambda: registry.__dict__.__setitem__("_repositories", scanned)
+    )
+
+    registry._refresh_safely()
+
+    assert notified == [True], "a snapshot that gained a repository must notify"
+
+
+def test_unchanged_snapshot_does_not_notify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A periodic rescan that finds nothing new must not make every client refetch."""
+    notified: list[bool] = []
+    registry = ConfiguredRepositoryRegistry(
+        tmp_path / "cache.json", on_refreshed=lambda: notified.append(True)
+    )
+    registry._repositories = (_repository("o/one"),)
+    monkeypatch.setattr(registry, "refresh", lambda: registry._repositories)
+
+    registry._refresh_safely()
+
+    assert notified == []
+
+
+def test_failed_scan_does_not_notify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    notified: list[bool] = []
+    registry = ConfiguredRepositoryRegistry(
+        tmp_path / "cache.json", on_refreshed=lambda: notified.append(True)
+    )
+
+    def _fail() -> tuple[ConfiguredRepository, ...]:
+        raise RepositoryScanError("boom")
+
+    monkeypatch.setattr(registry, "refresh", _fail)
+
+    registry._refresh_safely()
+
+    assert notified == []
+
+
+def test_raising_listener_does_not_kill_the_refresh_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The listener publishes onto an event loop it does not own; a failure there must not take
+    down background discovery."""
+
+    def _explode() -> None:
+        raise RuntimeError("listener blew up")
+
+    registry = ConfiguredRepositoryRegistry(tmp_path / "cache.json", on_refreshed=_explode)
+    scanned = (_repository("o/one"),)
+    monkeypatch.setattr(
+        registry, "refresh", lambda: registry.__dict__.__setitem__("_repositories", scanned)
+    )
+
+    registry._refresh_safely()

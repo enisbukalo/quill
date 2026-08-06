@@ -62,7 +62,8 @@ class Services:
         self.bus = EventBus()
         self.history = History(self.settings.db_url)
         self.repositories = ConfiguredRepositoryRegistry(
-            self.settings.state_dir / "configured-repositories.json"
+            self.settings.state_dir / "configured-repositories.json",
+            on_refreshed=self._publish_repositories_refreshed,
         )
         self.workspaces = WorkspaceManager(
             self.settings.workspace_root,
@@ -165,6 +166,18 @@ class Services:
                 "project_queue": self.project_queue.view().model_dump(),
             }
         )
+
+    def _publish_repositories_refreshed(self) -> None:
+        """Announce that background repository discovery produced a new snapshot.
+
+        ``GET /github/repositories`` answers from cache and rescans behind the response, so
+        without this a client that read during a cold window never learned the newer list.
+        The payload is deliberately a bare tag: clients refetch the endpoint rather than trust
+        a serialized list pushed from a worker thread.
+        """
+        if not self.bus.is_bound:
+            return
+        self.bus.publish_threadsafe({"type": "repositories_refreshed"})
 
     def start(self) -> None:
         """Begin draining the queue and close out runs stranded by the last shutdown."""
