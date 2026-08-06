@@ -27,7 +27,6 @@ import {
 } from "./format.mjs";
 import {
   centeredPhaseScroll,
-  contractEdgeLabel,
   edgeLabelPosition,
   formatPhaseDuration,
   layoutPhaseGraph,
@@ -1171,13 +1170,8 @@ function renderPhaseGraphPanel(run = activeDisplayRun()) {
           : null;
         if (label) label.textContent = String(edge.count);
         const titleNode = svgElement("title");
-        const contractText = contractEdgeLabel(edge.contracts);
-        titleNode.textContent = `${edge.source} to ${edge.target}, traversed ${edge.count} times${contractText ? ` · contracts: ${contractText}` : ""}`;
-        const contractLabel = contractText
-          ? svgElement("text", { x: labelAt.x, y: labelAt.y + 10, "text-anchor": "middle", class: "phase-edge-contract" })
-          : null;
-        if (contractLabel) contractLabel.textContent = contractText;
-        append(group, titleNode, path, label, contractLabel);
+        titleNode.textContent = `${edge.source} to ${edge.target}, traversed ${edge.count} times`;
+        append(group, titleNode, path, label);
         svg.append(group);
       }
       for (const node of layout.nodes) {

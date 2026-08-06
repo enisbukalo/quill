@@ -37,7 +37,6 @@ import {
 } from "../../quill_api/web/format.mjs";
 import {
   centeredPhaseScroll,
-  contractEdgeLabel,
   concurrencyGroups,
   formatPhaseDuration,
   groupBoxes,
@@ -86,7 +85,6 @@ test("phase graph preserves contract edges and latest validated attempt status",
     status: "COMPLETE",
     digest: "abc",
   });
-  assert.equal(contractEdgeLabel(graph.edges[0].contracts), "requirements/v1");
   assert.equal(normalizeContractState({ attempt: 0, state: "published" }), null);
 });
 import { reconcileModelOverrides } from "../../quill_api/web/run-model-overrides.mjs";
@@ -342,6 +340,8 @@ test("phase graph renders execution and token labels inside nodes and labels onl
   assert.match(app, /const rows = nodeTextRows\(node\.height\)/);
   assert.doesNotMatch(app, /y: -9,/, "duration must not be positioned above the node");
   assert.doesNotMatch(app, /phase-self-check-node/);
+  assert.doesNotMatch(app, /phase-edge-contract/);
+  assert.doesNotMatch(app, /contracts:/);
   assert.match(app, /edge\.lane > 0 && edge\.count > 0/);
 });
 
@@ -421,6 +421,13 @@ test("phase graph structure signatures ignore live values but detect geometry ch
     phase_token_counts: { impl: 50_000 },
   });
   assert.equal(phaseGraphStructureSignature(base), phaseGraphStructureSignature(liveUpdate));
+
+  const contractMetadataUpdate = structuredClone(baseRun);
+  contractMetadataUpdate.phase_graph.edges[0].contracts = ["quill.implementation/v2"];
+  assert.equal(
+    phaseGraphStructureSignature(base),
+    phaseGraphStructureSignature(normalizePhaseGraph(contractMetadataUpdate)),
+  );
 
   const withVisibleRetry = normalizePhaseGraph({
     ...baseRun,

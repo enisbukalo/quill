@@ -139,13 +139,6 @@ export function normalizeContractState(value) {
   };
 }
 
-export function contractEdgeLabel(contracts = []) {
-  return contracts.map((contract) => {
-    const [kind, version = ""] = String(contract).split("/");
-    return `${kind.split(".").at(-1) || kind}${version ? `/${version}` : ""}`;
-  }).join(", ");
-}
-
 /** Identify graph changes that require new geometry.
  *
  * Traversal counts, durations, and token totals intentionally do not participate. Contract attempt
@@ -170,7 +163,7 @@ export function phaseGraphStructureSignature(graph) {
     ]),
     edges: (graph.edges || [])
       .filter((edge) => edge.count > 0 || edge.kinds.includes("normal"))
-      .map((edge) => [edge.key, edge.source, edge.target, [...edge.kinds].sort(), edge.contracts]),
+      .map((edge) => [edge.key, edge.source, edge.target, [...edge.kinds].sort()]),
     groups: (graph.groups || []).map((group) => [group.id, group.label, [...group.members]]),
   });
 }

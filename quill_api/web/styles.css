@@ -533,7 +533,6 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .phase-node-contract { fill: currentColor; font: 800 8px ui-monospace, monospace; letter-spacing: .03em; }
 .phase-node-contract[data-contract-state="published"], .phase-node-contract[data-contract-state="validated"] { fill: var(--green); }
 .phase-node-contract[data-contract-state="incomplete"], .phase-node-contract[data-contract-state="rejected"] { fill: var(--red); }
-.phase-edge-contract { fill: var(--muted); font: 700 7px ui-monospace, monospace; letter-spacing: .02em; }
 .phase-self-fix-loop[data-state="active"] { animation: phase-loop-pulse 1.2s ease-in-out infinite; }
 .phase-row-nested .phase-row-label { padding-left: 24px; }
 .phase-row-branch { color: var(--cyan); display: inline-block; margin-right: 8px; }
