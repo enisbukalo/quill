@@ -1271,10 +1271,8 @@ class History:
             session.commit()
             return True
 
-    def remove_pending_project_queue_item(
-        self, item_id: str, *, removed_at: float | None = None
-    ) -> bool:
-        """Remove only work that has not started; active execution is never cancelled here."""
+    def remove_project_queue_item(self, item_id: str, *, removed_at: float | None = None) -> bool:
+        """Remove queued work that is not executing or waiting on a pull request."""
         now = time.time() if removed_at is None else removed_at
         with Session(self._engine) as session:
             item = session.get(ProjectQueueItemRow, item_id)
@@ -1282,7 +1280,7 @@ class History:
                 return False
             if item.state == "removed":
                 return True
-            if item.state not in {"stabilizing", "pending"}:
+            if item.state not in {"stabilizing", "pending", "paused"}:
                 return False
             item.state = "removed"
             item.updated_at = now

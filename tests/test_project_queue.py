@@ -233,7 +233,7 @@ def test_snapshot_change_restarts_stabilization_window(
 def test_failed_root_pauses_head_and_never_admits_later_ticket(
     setup: tuple[ProjectQueueCoordinator, History, FakeBoard, list[RunState], list[float]],
 ) -> None:
-    coordinator, history, _board, admitted, now = setup
+    coordinator, history, board, admitted, now = setup
     coordinator.add_batch(REPOSITORY, [3, 16])
     coordinator.scan_once()
     now[0] += 5
@@ -248,6 +248,12 @@ def test_failed_root_pauses_head_and_never_admits_later_ticket(
     item = history.find_active_project_queue_item("me/game", 3)
     assert item is not None and item.state == "paused" and item.error == "tests failed"
     assert [run.ticket for run in admitted] == [3]
+
+    removal = coordinator.remove_items(REPOSITORY, [3])
+
+    assert removal.results[0].removed is True
+    assert history.find_active_project_queue_item("me/game", 3) is None
+    assert next(candidate for candidate in board.items if candidate.number == 3).status == "Backlog"
 
 
 def test_exact_merged_pr_completes_head_and_releases_next(

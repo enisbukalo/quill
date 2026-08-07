@@ -2305,13 +2305,12 @@ function renderProjectQueueOrder() {
       element("time", "mono muted", formatTime(batch.submitted_at).label),
     );
     batchPanel.append(header);
-    if (batch.error) append(batchPanel, diagnostic(batch.error, "notice danger"));
     const wrap = element("div", "table-wrap project-queue-table-wrap");
     const table = element("table", "project-queue-table");
     const head = element("thead");
     const headRow = element("tr");
     const batchRemovable = (batch.items || []).filter((item) =>
-      ["stabilizing", "pending"].includes(item.state));
+      ["stabilizing", "pending", "paused"].includes(item.state));
     const selectHead = element("th");
     const selectAll = element("input");
     selectAll.type = "checkbox";
@@ -2341,7 +2340,7 @@ function renderProjectQueueOrder() {
       if (["paused", "failed", "halted"].includes(item.state)) row.classList.add("project-queue-blocked");
       const selectCell = element("td");
       const selector = element("input");
-      const removableItem = ["stabilizing", "pending"].includes(item.state);
+      const removableItem = ["stabilizing", "pending", "paused"].includes(item.state);
       const key = queuedItemKey(batch.repo, item.ticket);
       selector.type = "checkbox";
       selector.checked = state.queuePage.queuedSelected.has(key);
@@ -2378,14 +2377,6 @@ function renderProjectQueueOrder() {
         element("td", "mono", item.pr_number ? `#${item.pr_number}` : "—"),
       );
       body.append(row);
-      if (item.error) {
-        const errorRow = element("tr", "project-queue-error-row");
-        const cell = element("td");
-        cell.colSpan = 9;
-        cell.append(diagnostic(item.error, "notice danger"));
-        errorRow.append(cell);
-        body.append(errorRow);
-      }
     }
     append(table, head, body);
     wrap.append(table);
@@ -2403,7 +2394,7 @@ function queuedItemKey(repo, ticket) {
 function pruneQueuedSelection() {
   const available = new Set((state.projectQueue?.batches || []).flatMap((batch) =>
     (batch.items || [])
-      .filter((item) => ["stabilizing", "pending"].includes(item.state))
+      .filter((item) => ["stabilizing", "pending", "paused"].includes(item.state))
       .map((item) => queuedItemKey(batch.repo, item.ticket))));
   state.queuePage.queuedSelected = new Set(
     [...state.queuePage.queuedSelected].filter((key) => available.has(key)),

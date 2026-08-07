@@ -198,13 +198,13 @@ def test_run_and_pr_attachment_are_exact_and_idempotent() -> None:
     assert history.complete_project_queue_item(item.item_id, pr_number=12)
 
 
-def test_remove_is_limited_to_unstarted_work_and_empty_batch_completes() -> None:
+def test_remove_accepts_nonexecuting_work_and_empty_batch_completes() -> None:
     history = History()
     _batch(history, "empty", [1], created_at=1.0)
     item = history.list_project_queue_items(batch_id="empty")[0]
 
-    assert history.remove_pending_project_queue_item(item.item_id, removed_at=2.0)
-    assert history.remove_pending_project_queue_item(item.item_id, removed_at=3.0)
+    assert history.remove_project_queue_item(item.item_id, removed_at=2.0)
+    assert history.remove_project_queue_item(item.item_id, removed_at=3.0)
     batch = history.list_project_queue_batches(active_only=False)[0]
     assert (batch.state, batch.completed_at) == ("completed", 2.0)
     assert history.list_project_queue_batches() == []
@@ -214,7 +214,9 @@ def test_remove_is_limited_to_unstarted_work_and_empty_batch_completes() -> None
     history.stabilize_project_queue_batch("running")
     running = history.claim_project_queue_head()
     assert running is not None
-    assert not history.remove_pending_project_queue_item(running.item_id)
+    assert not history.remove_project_queue_item(running.item_id)
+    assert history.pause_project_queue_item(running.item_id, error="run failed")
+    assert history.remove_project_queue_item(running.item_id)
 
 
 def test_empty_created_batch_is_completed_without_claim() -> None:

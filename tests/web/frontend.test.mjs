@@ -1858,7 +1858,13 @@ test("queue navigation, grouped selection, SSE, and overview snapshot are wired"
   assert.match(app, /state\.projectQueue = event\.project_queue \|\| state\.projectQueue/);
   assert.match(app, /dataset\.liveRegion = "project-queue-order"/);
   assert.match(styles, /\.project-queue-actions/);
-  assert.match(styles, /\.project-queue-error-row \.notice \{ display: block;/);
+  const queueOrder = app.slice(
+    app.indexOf("function renderProjectQueueOrder"),
+    app.indexOf("function renderQueueCandidates"),
+  );
+  assert.match(queueOrder, /\["stabilizing", "pending", "paused"\]/);
+  assert.doesNotMatch(queueOrder, /batch\.error|item\.error|project-queue-error-row/);
+  assert.doesNotMatch(styles, /project-queue-error-row/);
   assert.doesNotMatch(app, /Skip ticket|Advance queue/);
 
   assert.match(app, /function renderOverviewRunPulse/);

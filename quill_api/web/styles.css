@@ -348,9 +348,6 @@ textarea { min-height: 280px; resize: vertical; font: .78rem/1.55 ui-monospace, 
 .project-queue-actions { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; margin-bottom: .8rem; }
 .project-queue-actions .notice { margin-right: auto; }
 .project-queue-blocked td { background: rgba(255,84,112,.045); }
-.project-queue-error-row td { padding: .4rem .72rem .75rem; }
-.project-queue-error-row .notice { display: block; min-width: 0; white-space: normal; }
-.project-queue-error-row .diagnostic-output { max-width: 100%; }
 .queue-empty-state { min-height: 110px; }
 .queue-candidate-controls { display: grid; grid-template-columns: minmax(240px, 480px); margin-bottom: .8rem; }
 .queue-candidate-table { min-width: 780px; }

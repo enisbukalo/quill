@@ -199,7 +199,7 @@ class ProjectQueueCoordinator:
                     results[ticket] = ProjectQueueRemoveResult(
                         ticket=ticket, removed=False, reason="ticket is not in the active queue"
                     )
-                elif item.state not in {"stabilizing", "pending"}:
+                elif item.state not in {"stabilizing", "pending", "paused"}:
                     results[ticket] = ProjectQueueRemoveResult(
                         ticket=ticket,
                         removed=False,
@@ -229,7 +229,7 @@ class ProjectQueueCoordinator:
                             removed=False,
                             reason=move.error or "GitHub Project update failed",
                         )
-                    elif self._history.remove_pending_project_queue_item(item.item_id):
+                    elif self._history.remove_project_queue_item(item.item_id):
                         changed = True
                         results[item.ticket] = ProjectQueueRemoveResult(
                             ticket=item.ticket, removed=True
@@ -439,7 +439,7 @@ class ProjectQueueCoordinator:
         changed = False
         for ticket, item in durable.items():
             if item.state in {"stabilizing", "pending"} and ticket not in current:
-                changed = self._history.remove_pending_project_queue_item(item.item_id) or changed
+                changed = self._history.remove_project_queue_item(item.item_id) or changed
         for batch_id in {
             item.batch_id
             for ticket, item in durable.items()
