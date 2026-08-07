@@ -312,10 +312,11 @@ revision that breaks the build or crashes still stops the run.
 Two other behaviors follow the same principle. Reviewers re-run inside a gate's revise route are
 prompted in verification mode rather than auditing fresh. Named audit lanes receive only carried
 findings in their own ID namespace, while every lane still performs a bounded regression audit and
-the finalizer retains the combined record. A gating re-review reports a **status delta** —
+the finalizer retains the combined record. Finalizers and gating re-reviews report a **status
+delta** —
 `dispositions` naming prior finding IDs, plus any `new_findings` — which Quill applies to the records
-it already holds. The model never re-emits a prior finding's immutable fields, so verification
-cannot fail on transcription drift.
+it already holds. The model never re-emits a prior finding's immutable fields, so reconciliation or
+verification cannot fail on transcription drift.
 
 Consecutive vLLM producers with the same non-empty `parallel_group` run as independent sessions,
 bounded by the model's live capacity. Each lane emits its own live start, usage, tool, completion,

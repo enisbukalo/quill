@@ -148,16 +148,21 @@ def _write_projection_for(agent: str, prompt: str, receipt: str) -> None:
     if match is None:
         return
     path = Path(match.group(1))
-    if '"dispositions"' in prompt:
-        payload: object = {
-            "schema_version": 1,
-            "dispositions": [
+    if '"dispositions"' in prompt or agent.endswith("_final"):
+        dispositions = (
+            []
+            if agent.endswith("_final")
+            else [
                 {
                     "id": "F1",
                     "status": "RESOLVED" if receipt.startswith("PASS") else "OPEN",
                     "evidence": "test fixture verification",
                 }
-            ],
+            ]
+        )
+        payload: object = {
+            "schema_version": 1,
+            "dispositions": dispositions,
             "new_findings": [],
         }
     elif agent.startswith(("research_gate", "review_")):

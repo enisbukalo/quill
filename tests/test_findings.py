@@ -348,6 +348,34 @@ def test_informational_review_namespaces_ids_deterministically(tmp_path: Path) -
     assert load_findings(artifact)[0].id == "architecture:F1"
 
 
+def test_informational_review_rejects_collision_created_by_namespacing(tmp_path: Path) -> None:
+    """A valid local artifact must not become an invalid finalizer input after prefixing."""
+    artifact = tmp_path / "review.md"
+    _write(
+        artifact,
+        [
+            _finding(id="architecture:F1"),
+            _finding(id="correctness:architecture:F1", title="Sibling copy"),
+        ],
+    )
+
+    result = deterministic_review_result(
+        artifact,
+        PhaseResult(Outcome.DONE, "projected"),
+        namespace="correctness",
+    )
+
+    assert result.outcome is Outcome.GARBAGE
+    assert "namespace 'correctness' produces duplicate finding id correctness:architecture:F1" in (
+        result.message
+    )
+    # Reject before persisting the normalized payload, leaving the repair session a valid file to edit.
+    assert [finding.id for finding in load_findings(artifact)] == [
+        "architecture:F1",
+        "correctness:architecture:F1",
+    ]
+
+
 # -- round-aware blocking policy --------------------------------------------------
 
 _CONVERGING = BlockingPolicy(
@@ -601,7 +629,7 @@ def test_delta_rejects_an_invalid_status(tmp_path: Path) -> None:
 
 
 def test_full_array_verification_artifact_passes_through_untouched(tmp_path: Path) -> None:
-    """A model that ignores the delta shape must still work."""
+    """Legacy direct callers retain full-array compatibility."""
     artifact = tmp_path / "final.json"
     _write(artifact, [_finding(id="architecture:F1"), _finding(id="tests:F2")])
     before = artifact.read_text(encoding="utf-8")
@@ -609,6 +637,30 @@ def test_full_array_verification_artifact_passes_through_untouched(tmp_path: Pat
     materialize_verification_delta(artifact, _prior_pair())
 
     assert artifact.read_text(encoding="utf-8") == before
+
+
+def test_contract_projection_rejects_full_array_when_delta_is_required(tmp_path: Path) -> None:
+    artifact = tmp_path / "final.json"
+    _write(artifact, [_finding(id="architecture:F1"), _finding(id="tests:F2")])
+
+    with pytest.raises(ValueError, match="must use dispositions/new_findings delta"):
+        materialize_verification_delta(artifact, _prior_pair(), require_delta=True)
+
+
+def test_delta_rejects_duplicate_dispositions(tmp_path: Path) -> None:
+    artifact = tmp_path / "final.json"
+    _write_delta(
+        artifact,
+        {
+            "dispositions": [
+                {"id": "architecture:F1", "status": "OPEN"},
+                {"id": "architecture:F1", "status": "RESOLVED"},
+            ]
+        },
+    )
+
+    with pytest.raises(ValueError, match="duplicate disposition"):
+        materialize_verification_delta(artifact, _prior_pair())
 
 
 def test_delta_cannot_express_the_identity_drift_that_used_to_discard_runs(tmp_path: Path) -> None:

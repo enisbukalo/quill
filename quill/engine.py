@@ -865,14 +865,15 @@ def _findings_projection_validator(
     prior: tuple[Finding, ...] = (),
     gate_round: GateRound = GateRound(),
     verify: bool = False,
+    materialize_delta: bool = False,
     namespace: str | None = None,
 ) -> Callable[[Path, PhaseResult], PhaseResult]:
     """Bridge a late-projected payload to the existing authoritative finding semantics."""
 
     def validate(path: Path, receipt: PhaseResult) -> PhaseResult:
-        if verify and phase.gates:
+        if materialize_delta:
             try:
-                materialize_verification_delta(path, prior)
+                materialize_verification_delta(path, prior, require_delta=True)
             except ValueError as exc:
                 return PhaseResult(Outcome.GARBAGE, str(exc), raw_receipt=receipt.raw_receipt)
         if phase.gates:
@@ -905,19 +906,25 @@ def _finalize_findings_contract(
     namespace: str | None = None,
 ) -> PhaseResult:
     """Self-check natural notes, late-project findings, validate semantics, and publish."""
+    # A finalizer reconciles records Quill already owns. Its model projects only dispositions and
+    # genuinely new findings, even on the initial gate pass; requiring it to retranscribe every
+    # upstream identity made semantic deduplication collide with byte-exact preservation. Gating
+    # reviewer verification uses the same safe delta shape on later rounds.
+    materialize_delta = phase.gates and (verify or phase.type == "finalizer")
     return _finalize_llm_contract(
         ctx,
         phase,
         model=model,
         artifact=notes,
         result=result,
-        projection_schema=_FINDINGS_DELTA_SCHEMA if verify and phase.gates else None,
+        projection_schema=_FINDINGS_DELTA_SCHEMA if materialize_delta else None,
         payload_validator=_findings_projection_validator(
             ctx,
             phase,
             prior=prior,
             gate_round=gate_round,
             verify=verify,
+            materialize_delta=materialize_delta,
             namespace=namespace,
         ),
         compatibility_artifact=findings,
@@ -1046,9 +1053,7 @@ def _audit_phase(parent: PhaseDef, audit: AuditDef) -> PhaseDef:
     )
 
 
-def _findings_owned_by_audit(
-    findings: tuple[Finding, ...], audit_id: str
-) -> tuple[Finding, ...]:
+def _findings_owned_by_audit(findings: tuple[Finding, ...], audit_id: str) -> tuple[Finding, ...]:
     """Return only carried findings whose stable namespace belongs to one audit lane."""
     prefix = f"{audit_id}:"
     return tuple(finding for finding in findings if finding.id.startswith(prefix))
@@ -1979,7 +1984,7 @@ def _resolve_structured_gate(
         if delta and prior:
             # A verification pass answers in the status-delta shape; fold it back into the
             # canonical array using the findings Quill already holds, so prior identity is never
-            # re-emitted and therefore cannot drift. A full-array answer passes through untouched.
+            # re-emitted and therefore cannot drift.
             try:
                 materialize_verification_delta(path, prior)
             except ValueError as exc:
@@ -3415,9 +3420,10 @@ def _finalizer_task(
             "its required outcome."
             if verify
             else (
-                " Preserve every input finding ID exactly. Include each input CRITICAL/MAJOR "
-                "finding and mark it RESOLVED only when current evidence proves its required "
-                "outcome."
+                " Adjudicate every input CRITICAL/MAJOR finding by ID. Equivalent findings may "
+                "share one discussion, but state each source ID's disposition; Quill preserves "
+                "their immutable records mechanically. Mark one RESOLVED only when current "
+                "evidence proves its required outcome."
             )
         )
         if phase.structured_findings

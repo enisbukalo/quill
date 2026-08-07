@@ -177,8 +177,13 @@ def _is_verification_delta(raw: object) -> bool:
     return isinstance(raw, dict) and any(key in raw for key in _DELTA_KEYS)
 
 
-def materialize_verification_delta(path: Path, prior: tuple[Finding, ...]) -> None:
-    """Rewrite a delta-shaped verification artifact into the canonical full findings array.
+def materialize_verification_delta(
+    path: Path,
+    prior: tuple[Finding, ...],
+    *,
+    require_delta: bool = False,
+) -> None:
+    """Rewrite a delta-shaped reconciliation artifact into the canonical findings array.
 
     A verification pass used to be required to re-emit every prior finding verbatim — nine string
     fields per finding, byte-identical, or the gate returned GARBAGE and discarded the run. That is
@@ -190,14 +195,21 @@ def materialize_verification_delta(path: Path, prior: tuple[Finding, ...]) -> No
     genuinely knows — a status plus evidence per prior ID, and any genuinely new finding — and Quill
     reconstructs the authoritative artifact itself. Identity is never re-emitted, so it cannot drift.
 
-    A full-array artifact passes through untouched, so a model that ignores the delta shape (or a
-    non-verification pass) still works. Raises :class:`ValueError` with an actionable reason.
+    A full-array artifact passes through untouched for legacy direct callers unless
+    ``require_delta`` is set. Contract projection paths require the delta so a model cannot reopen
+    the immutable-field transcription failure by ignoring its requested schema. Raises
+    :class:`ValueError` with an actionable reason.
     """
     try:
         raw: Any = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid findings JSON: {exc}") from exc
     if not _is_verification_delta(raw):
+        if require_delta:
+            raise ValueError(
+                "findings projection must use dispositions/new_findings delta; "
+                "do not re-emit prior findings"
+            )
         return
     if raw.get("schema_version") != 1:
         raise ValueError("findings must be an object with schema_version 1")
@@ -206,6 +218,7 @@ def materialize_verification_delta(path: Path, prior: tuple[Finding, ...]) -> No
     dispositions = raw.get("dispositions", [])
     if not isinstance(dispositions, list):
         raise ValueError("dispositions must be an array")
+    seen_dispositions: set[str] = set()
     for index, row in enumerate(dispositions):
         if not isinstance(row, dict):
             raise ValueError(f"disposition #{index + 1} must be an object")
@@ -213,6 +226,9 @@ def materialize_verification_delta(path: Path, prior: tuple[Finding, ...]) -> No
         if not isinstance(finding_id, str) or finding_id.strip() not in carried:
             raise ValueError(f"disposition #{index + 1} names unknown finding {finding_id!r}")
         finding_id = finding_id.strip()
+        if finding_id in seen_dispositions:
+            raise ValueError(f"duplicate disposition for finding {finding_id}")
+        seen_dispositions.add(finding_id)
         status = row.get("status")
         if not isinstance(status, str) or status.strip().upper() not in STATUSES:
             raise ValueError(f"disposition for {finding_id} has invalid status {status!r}")
@@ -235,7 +251,7 @@ def materialize_verification_delta(path: Path, prior: tuple[Finding, ...]) -> No
     # silence is not loss of information — it simply means the reviewer made no claim about it.
     payload = {
         "schema_version": 1,
-        "findings": [asdict(carried[finding.id]) for finding in prior] + new_rows,
+        "findings": [_finding_payload(carried[finding.id]) for finding in prior] + new_rows,
     }
     path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
@@ -253,10 +269,26 @@ def normalize_findings_namespace(path: Path, namespace: str) -> tuple[Finding, .
         finding if finding.id.startswith(prefix) else replace(finding, id=f"{prefix}{finding.id}")
         for finding in findings
     )
+    seen: set[str] = set()
+    for finding in normalized:
+        if finding.id in seen:
+            raise ValueError(
+                f"namespace {namespace!r} produces duplicate finding id {finding.id}; "
+                "use unique lane-local IDs"
+            )
+        seen.add(finding.id)
     if normalized != findings:
-        payload = {"schema_version": 1, "findings": [asdict(finding) for finding in normalized]}
+        payload = {
+            "schema_version": 1,
+            "findings": [_finding_payload(finding) for finding in normalized],
+        }
         path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     return normalized
+
+
+def _finding_payload(finding: Finding) -> dict[str, str]:
+    """Serialize one finding without optional nulls rejected by the contract schema."""
+    return {key: value for key, value in asdict(finding).items() if value is not None}
 
 
 def deterministic_review_result(

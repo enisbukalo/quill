@@ -1254,6 +1254,83 @@ def test_structured_finalizer_cannot_omit_blocking_audit_finding(tmp_path: Path)
     assert "omitted prior blocking finding(s): correctness:F1" in result.message
 
 
+def test_contract_finalizer_mechanically_preserves_deduplicated_upstream_findings(
+    tmp_path: Path,
+) -> None:
+    """Regression: ticket 53 died when reconciled prose grouped IDs then projection reworded them."""
+    review = PhaseDef(
+        id="review_impl",
+        type="reviewer",
+        audits=(
+            AuditDef("architecture", "Architecture", "architecture.md", "qwen"),
+            AuditDef("tests", "Tests", "tests.md", "qwen"),
+        ),
+        structured_findings=True,
+        produces_contract="quill.review.findings/v1",
+    )
+    finalizer = PhaseDef(
+        id="review_impl_final",
+        type="finalizer",
+        persona="review-final.md",
+        models=("qwen",),
+        artifact="review_impl_final.md",
+        reconciles=("review_impl",),
+        gates=True,
+        structured_findings=True,
+        produces_contract="quill.review.findings/v1",
+        retry_budget=0,
+    )
+    config = _config(tmp_path, [review, finalizer])
+    spawn = _Spawn({"review_impl_final": "DONE: reconciled"})
+    spawn.skip_write.add("review_impl_final")
+    ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
+    architecture = _blocker("architecture:F2")
+    tests = _blocker("tests:F2")
+    tests["title"] = "Same underlying message defect"
+    tests["requirement"] = "A differently worded source requirement"
+    ctx.artifact_path("review-review_impl-architecture.md").write_text(
+        json.dumps({"schema_version": 1, "findings": [architecture]}), encoding="utf-8"
+    )
+    ctx.artifact_path("review-review_impl-tests.md").write_text(
+        json.dumps({"schema_version": 1, "findings": [tests]}), encoding="utf-8"
+    )
+    # Natural reconciliation may group equivalent findings instead of transcribing every field.
+    ctx.artifact_path("review-notes-review_impl_final-qwen.md").write_text(
+        "architecture:F2 and tests:F2 describe the same open root cause.\n", encoding="utf-8"
+    )
+    projection_prompts: list[str] = []
+
+    def repair(
+        agent: str,
+        preset: str,
+        prompt: str,
+        *,
+        timeout: float,
+        stream_path: Path,
+        on_tool: object = None,
+        on_usage: object = None,
+        abort_reason: object = None,
+    ) -> str:
+        if match := _PROJECTION_RE.search(prompt):
+            projection_prompts.append(prompt)
+            Path(match.group(1)).write_text(
+                json.dumps({"schema_version": 1, "dispositions": [], "new_findings": []}),
+                encoding="utf-8",
+            )
+        return "DONE: projected"
+
+    ctx.deps.session_repair = repair
+
+    result = engine._run_finalizer(ctx, finalizer)
+
+    assert result.outcome is Outcome.BLOCK
+    assert len(projection_prompts) == 1
+    assert '"dispositions"' in projection_prompts[0]
+    rebuilt = load_findings(ctx.artifact_path("review_impl_final.md"))
+    assert rebuilt == (Finding(**architecture), Finding(**tests))
+    assert "identity field" not in result.message
+
+
 def test_finalizer_verification_normalizes_reused_finding_id_collision(tmp_path: Path) -> None:
     review = PhaseDef(
         id="review_impl",
@@ -1298,11 +1375,18 @@ def test_finalizer_verification_normalizes_reused_finding_id_collision(tmp_path:
         encoding="utf-8",
     )
     merged = merge_verification_findings((old,), (new,))
-    resolved = [
-        asdict(replace(finding, status="RESOLVED", evidence="verified fixed")) for finding in merged
-    ]
     ctx.artifact_path("review_impl_final.md").write_text(
-        json.dumps({"schema_version": 1, "findings": resolved}), encoding="utf-8"
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dispositions": [
+                    {"id": finding.id, "status": "RESOLVED", "evidence": "verified fixed"}
+                    for finding in merged
+                ],
+                "new_findings": [],
+            }
+        ),
+        encoding="utf-8",
     )
 
     result = engine._run_phase_for_verify(ctx, finalizer, prior_findings=(old,))
