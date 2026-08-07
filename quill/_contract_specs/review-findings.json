@@ -27,7 +27,8 @@
             "failure_scenario": {"type": "string", "min_length": 1},
             "required_outcome": {"type": "string", "min_length": 1},
             "owner": {"type": "string", "min_length": 1},
-            "introduced_by_revision": {"type": "string", "min_length": 1}
+            "introduced_by_revision": {"type": "string", "min_length": 1},
+            "escalation_reason": {"type": "string", "min_length": 1}
           }
         }
       }

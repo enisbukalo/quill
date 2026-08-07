@@ -62,6 +62,39 @@ IDs. Resolve a finding only when evidence proves its required outcome. Newly int
 must identify their lane owner and the revision evidence that introduced them. Late discovery of a
 pre-existing issue is advisory, not a new blocker.
 
+# Escalation
+
+When all blocking findings are **decision-points** (not defects), the gate may escalate
+instead of blocking. A decision-point is a finding where:
+
+- Multiple viable options exist with documented trade-offs.
+- The ticket language, constraints, or evidence lean toward one option but do not
+  definitively mandate it.
+- Repeated blocks (two or more) show the lane cannot break the tie.
+
+Escalation routes the run directly to planning, skipping the research-retry loop.
+Planning is the phase that makes design choices.
+
+To escalate, set `escalation_reason` on each blocking finding. The reason must cite
+why the finding is a decision-point and briefly state the leaning (e.g. "ticket language
+'from the components it already owns' favors Approach A").
+
+Example:
+
+    {
+      "id": "F-001",
+      "severity": "CRITICAL",
+      "status": "RESOLVED",
+      "escalation_reason": "Two viable approaches documented with trade-offs; ticket language
+        \"constructed in _init() from the components it already owns\" strongly favors Approach A
+        (RuntimeContext owns WorldMap). Architecture lane attempted 3 revisions without commitment;
+        this is a planning-phase design decision, not a research defect.",
+      ...
+    }
+
+Do NOT escalate findings that are pure defects (missing evidence, wrong facts, contradictions).
+Those must remain OPEN and BLOCK normally.
+
 # Do not
 
 - Do not modify source or artifacts.

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha256
 from dataclasses import asdict, dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ class Finding:
     required_outcome: str
     owner: str | None = None
     introduced_by_revision: str | None = None
+    escalation_reason: str | None = None  # set by gate when escalating a decision to planning
 
     @property
     def blocks(self) -> bool:
@@ -154,7 +155,7 @@ def load_findings(path: Path) -> tuple[Finding, ...]:
             raise ValueError(f"duplicate finding id {values['id']}")
         seen.add(values["id"])
         optional: dict[str, str | None] = {}
-        for field in ("owner", "introduced_by_revision"):
+        for field in ("owner", "introduced_by_revision", "escalation_reason"):
             value = row.get(field)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"finding #{index + 1} has invalid {field}")
@@ -164,6 +165,7 @@ def load_findings(path: Path) -> tuple[Finding, ...]:
                 **values,
                 owner=optional["owner"],
                 introduced_by_revision=optional["introduced_by_revision"],
+                escalation_reason=optional["escalation_reason"],
             )
         )
     return tuple(findings)
@@ -437,10 +439,44 @@ def deterministic_gate_result(
 
     blockers = [finding for finding in current if gates(finding)]
     if blockers:
+        # Escalation: if every blocker carries an escalation_reason, the gate has determined
+        # these are decision-points rather than defects. Route directly to planning.
+        all_escalated = all(b.escalation_reason for b in blockers)
+        if all_escalated:
+            summary = "; ".join(
+                f"{finding.id} ({finding.severity}): {finding.title}" for finding in blockers
+            )
+            return PhaseResult(
+                Outcome.ESCALATE,
+                f"escalated to planning — {summary}",
+                raw_receipt=receipt.raw_receipt,
+            )
         summary = "; ".join(
             f"{finding.id} ({finding.severity}): {finding.title}" for finding in blockers
         )
         return PhaseResult(Outcome.BLOCK, summary, raw_receipt=receipt.raw_receipt)
+
+    # Escalation: all prior blockers are now RESOLVED with an escalation_reason.
+    # The gate has determined these are decision-points for planning, not defects for research.
+    prior_blocks = {f.id for f in prior if f.blocks}
+    if prior_blocks:
+        escalated_ids = {
+            f.id
+            for f in current
+            if f.id in prior_blocks and f.status == "RESOLVED" and f.escalation_reason
+        }
+        if escalated_ids == prior_blocks:
+            summary = "; ".join(
+                f"{finding.id} ({finding.severity}): {finding.title}"
+                for finding in current
+                if finding.id in prior_blocks
+            )
+            return PhaseResult(
+                Outcome.ESCALATE,
+                f"escalated to planning — {summary}",
+                raw_receipt=receipt.raw_receipt,
+            )
+
     advisory = sum(finding.status == "OPEN" for finding in current)
     return PhaseResult(
         Outcome.PASS,

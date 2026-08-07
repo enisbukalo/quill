@@ -689,3 +689,237 @@ def test_delta_cannot_express_the_identity_drift_that_used_to_discard_runs(tmp_p
     assert "architecture:F1" in result.message
     assert "identity" not in result.message
     assert "omitted" not in result.message
+
+
+# ---------------------------------------------------------------------------
+# Escalation tests
+# ---------------------------------------------------------------------------
+
+
+def _prior_critical(title: str = "Decision required") -> dict[str, str]:
+    """A CRITICAL blocker that the lane cannot fix — a decision-point."""
+    return _finding(
+        id="F-001",
+        severity="CRITICAL",
+        title=title,
+        required_outcome="Architecture lane must propose a concrete resolution",
+    )
+
+
+def _escalated_critical(
+    title: str = "Decision required",
+    reason: str = "Ticket language favors Approach A; lane tried 3 times",
+) -> dict[str, str]:
+    """Same finding, resolved with an escalation_reason."""
+    base = _finding(
+        id="F-001",
+        severity="CRITICAL",
+        status="RESOLVED",
+        title=title,
+        required_outcome="Architecture lane must propose a concrete resolution",
+    )
+    base["escalation_reason"] = reason
+    return base
+
+
+def test_all_prior_blockers_escalated_returns_escapte(tmp_path: Path) -> None:
+    """When every prior blocker is RESOLVED with escalation_reason → ESCALATE."""
+    prior = _prior_critical()
+    _write(tmp_path / "review.md", [_escalated_critical()])
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=(Finding(**prior),),
+    )
+
+    assert result.outcome is Outcome.ESCALATE
+    assert "F-001" in result.message
+
+
+def test_one_escalated_one_still_open_returns_block(tmp_path: Path) -> None:
+    """Mixed: one escalated, one still OPEN → BLOCK (not ESCALATE)."""
+    prior = (
+        Finding(**_prior_critical()),
+        Finding(**_finding(id="F-002", severity="CRITICAL", title="Still broken")),
+    )
+    current = [
+        _escalated_critical(),
+        _finding(id="F-002", severity="CRITICAL", status="OPEN", title="Still broken"),
+    ]
+    _write(tmp_path / "review.md", current)
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=prior,
+    )
+
+    assert result.outcome is Outcome.BLOCK
+    assert "F-002" in result.message
+
+
+def test_resolved_without_escalation_reason_returns_pass(tmp_path: Path) -> None:
+    """Resolved normally (no escalation_reason) → PASS."""
+    prior = (Finding(**_prior_critical()),)
+    current = _prior_critical()
+    current["status"] = "RESOLVED"
+    _write(tmp_path / "review.md", [current])
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=prior,
+    )
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_no_prior_blockers_returns_pass(tmp_path: Path) -> None:
+    """No prior blockers → PASS (escalation logic not triggered)."""
+    _write(tmp_path / "review.md", [_finding(status="RESOLVED")])
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=(),
+    )
+
+    assert result.outcome is Outcome.PASS
+
+
+def test_missing_prior_blocker_returns_garbage(tmp_path: Path) -> None:
+    """Prior blocker missing from current → GARBAGE (identity check)."""
+    prior = (Finding(**_prior_critical()),)
+    _write(tmp_path / "review.md", [])
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=prior,
+    )
+
+    assert result.outcome is Outcome.GARBAGE
+    assert "omitted" in result.message
+
+
+def test_escalation_survives_verification_delta(tmp_path: Path) -> None:
+    """escalation_reason is preserved across verification delta processing."""
+    prior = (Finding(**_escalated_critical(reason="original reason")),)
+
+    _write_delta(
+        tmp_path / "review.md",
+        {
+            "dispositions": [
+                {"id": "F-001", "status": "RESOLVED", "evidence": "Updated evidence"},
+            ],
+            "new_findings": [],
+        },
+    )
+
+    materialize_verification_delta(tmp_path / "review.md", prior)
+
+    loaded = load_findings(tmp_path / "review.md")
+    assert len(loaded) == 1
+    assert loaded[0].escalation_reason == "original reason"
+    assert loaded[0].evidence == "Updated evidence"
+
+
+def test_multiple_prior_blockers_all_escalated_returns_escapte(tmp_path: Path) -> None:
+    """Multiple prior blockers, all escalated → ESCALATE."""
+    prior = (
+        Finding(**_prior_critical(title="Decision A")),
+        Finding(**_finding(id="F-002", severity="MAJOR", title="Decision B")),
+    )
+    current = [
+        _escalated_critical(title="Decision A", reason="Reason A"),
+        _finding(
+            id="F-002",
+            severity="MAJOR",
+            status="RESOLVED",
+            title="Decision B",
+            escalation_reason="Reason B",
+        ),
+    ]
+    _write(tmp_path / "review.md", current)
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=prior,
+    )
+
+    assert result.outcome is Outcome.ESCALATE
+    assert "F-001" in result.message
+    assert "F-002" in result.message
+
+
+def test_partial_escalation_returns_block(tmp_path: Path) -> None:
+    """Some prior blockers escalated, others not → BLOCK."""
+    # Must match _escalated_critical identity: _finding defaults with overridden id/severity/title/outcome
+    prior_a = _finding(
+        id="F-001",
+        severity="CRITICAL",
+        title="Decision A",
+        required_outcome="Architecture lane must propose a concrete resolution",
+    )
+    prior_b = _finding(
+        id="F-002",
+        severity="CRITICAL",
+        title="Decision B",
+        required_outcome="Architecture lane must propose a concrete resolution",
+    )
+    prior = (Finding(**prior_a), Finding(**prior_b))
+
+    # F-001: escalated (RESOLVED with escalation_reason)
+    current_a = _escalated_critical(title="Decision A", reason="Reason A")
+    # F-002: still OPEN (not escalated) — copy prior_b verbatim
+    current_b = prior_b.copy()
+
+    _write(tmp_path / "review.md", [current_a, current_b])
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        prior=prior,
+    )
+
+    assert result.outcome is Outcome.BLOCK
+    assert "F-002" in result.message
+
+
+def test_escalation_reason_field_parsed_from_json(tmp_path: Path) -> None:
+    """Loading findings from JSON preserves escalation_reason."""
+    _write(
+        tmp_path / "review.md",
+        [
+            _finding(
+                id="F-001",
+                severity="CRITICAL",
+                status="RESOLVED",
+                escalation_reason="Ticket favors Approach A",
+            )
+        ],
+    )
+
+    loaded = load_findings(tmp_path / "review.md")
+    assert len(loaded) == 1
+    assert loaded[0].escalation_reason == "Ticket favors Approach A"
+
+
+def test_invalid_escalation_reason_raises_value_error(tmp_path: Path) -> None:
+    """Empty escalation_reason raises ValueError."""
+    _write(
+        tmp_path / "review.md",
+        [
+            _finding(
+                id="F-001",
+                severity="CRITICAL",
+                status="RESOLVED",
+                escalation_reason="",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="invalid escalation_reason"):
+        load_findings(tmp_path / "review.md")

@@ -51,6 +51,7 @@ class Outcome(str, Enum):
     GARBAGE = "GARBAGE"  # ran, but no parsable receipt
     CRASH = "CRASH"  # errored / timed out before a receipt
     NEEDS_DECISION = "NEEDS_DECISION"
+    ESCALATE = "ESCALATE"  # all blockers are decisions, skip research → go to planning
 
 
 @dataclass(slots=True)

@@ -254,6 +254,28 @@ def run_phases(ctx: RunContext, *, start_phase: str | None = None) -> Event:
 
             if result.outcome in (Outcome.CRASH, Outcome.GARBAGE, Outcome.FAILED, Outcome.BLOCK):
                 return _fail(ctx, reason=result.message, phase=executed.id)
+
+            # ESCALATE is a controlled shortcut: the research gate has determined all blockers
+            # are decision-points for planning, not defects for research. Skip ahead to the
+            # phase that follows this gate, bypassing the normal retry loop.
+            if result.outcome is Outcome.ESCALATE:
+                # Find the phase that follows this gate in the config
+                gate_idx = ctx.config.phase_ids.index(executed.id)
+                # Advance past any remaining phases in the current parallel group
+                next_idx = gate_idx + 1
+                ctx.on_event(
+                    events.run_escalated(
+                        run_id=ctx.run_id,
+                        ticket=ctx.ticket,
+                        from_phase=executed.id,
+                        to_phase=ctx.config.phase_ids[next_idx]
+                        if next_idx < len(ctx.config.phase_ids)
+                        else None,
+                        message=result.message,
+                    )
+                )
+                phase_index = next_idx
+                continue
         phase_index += len(group)
 
     done = events.run_done(pr_url=ctx.pr_url)
@@ -1350,7 +1372,7 @@ def _run_mechanical(ctx: RunContext, phase: PhaseDef) -> PhaseResult:
     result = execute()
     _emit_verdict_or_done(ctx, phase, result, started=started)
 
-    if phase.gates and result.outcome in (Outcome.PASS, Outcome.BLOCK):
+    if phase.gates and result.outcome in (Outcome.PASS, Outcome.BLOCK, Outcome.ESCALATE):
         return _gate(ctx, phase, result, verify=lambda _a: execute())
     return result
 
@@ -1442,7 +1464,13 @@ def _gate(
     verify: Callable[[int], PhaseResult] | None = None,
 ) -> PhaseResult:
     """Revise-then-verify loop for a gated phase, re-running its ``on_block`` phases."""
-    if initial.outcome not in (Outcome.PASS, Outcome.BLOCK):
+    if initial.outcome not in (Outcome.PASS, Outcome.BLOCK, Outcome.ESCALATE):
+        return initial
+
+    # ESCALATE skips the revise-then-verify loop entirely: all blockers are decision-points
+    # that the gate has judged belong to planning, not research. Return immediately so the
+    # engine routes around the research lanes and into planning.
+    if initial.outcome is Outcome.ESCALATE:
         return initial
 
     # A gate's revise rounds are spent per RUN, not per phase attempt. `_dispatch_phase` (and so

@@ -38,6 +38,7 @@ CONTRACT_PUBLISHED = "contract_published"
 PHASE_DONE = "phase_done"
 GATE_VERDICT = "gate_verdict"
 RETRY = "retry"
+ESCALATED = "escalated"
 NEEDS_DECISION = "needs_decision"
 RUN_HALTED = "run_halted"
 RUN_DONE = "run_done"
@@ -332,6 +333,26 @@ def retry(
 
 def needs_decision(question: str, *, phase: str | None = None) -> Event:
     return _event(NEEDS_DECISION, question=question, phase=phase)
+
+
+def run_escalated(
+    run_id: str,
+    ticket: int,
+    *,
+    from_phase: str,
+    to_phase: str | None,
+    message: str,
+) -> Event:
+    return _event(
+        ESCALATED,
+        run_id=run_id,
+        ticket=ticket,
+        from_phase=from_phase,
+        to_phase=to_phase,
+        message=message,
+        failure_code=None,
+        failure_label=None,
+    )
 
 
 def run_halted(*, reason: str | None = None, phase: str | None = None) -> Event:
