@@ -3325,8 +3325,8 @@ def test_synthesis_revise_is_not_told_to_resolve_lane_owned_findings(tmp_path: P
     assert "Address EVERY Critical/Major finding" in plain_task
 
 
-def test_revise_route_reviewers_run_in_verification_mode(tmp_path: Path) -> None:
-    """The ticket #19 treadmill: audit lanes re-run inside a revise route must not audit fresh."""
+def test_revise_route_audits_verify_only_their_own_carried_findings(tmp_path: Path) -> None:
+    """Every audit reruns after revision, but sibling findings must not cross lane boundaries."""
     config = _audit_gate_pipeline(tmp_path)
     spawn = _Spawn({"review_impl_final": ["BLOCK: blocked", "PASS: resolved"]})
     # Lane and gate artifacts are pre-written valid findings JSON; the fake worker must not
@@ -3357,7 +3357,38 @@ def test_revise_route_reviewers_run_in_verification_mode(tmp_path: Path) -> None
     assert len(lane_prompts) == 4
     assert all("VERIFICATION mode" not in p for p in lane_prompts[:2])
     assert all("VERIFICATION mode" in p for p in lane_prompts[2:])
-    assert all("PRIOR BLOCKERS" in p for p in lane_prompts[2:])
+    rerun_prompts = {
+        agent.removeprefix("review_impl."): prompt
+        for agent, _model, prompt in spawn.calls
+        if agent.startswith("review_impl.") and "VERIFICATION mode" in prompt
+    }
+    assert "architecture:F1" in rerun_prompts["architecture"]
+    assert "tests:F1" not in rerun_prompts["architecture"]
+    assert "tests:F1" in rerun_prompts["tests"]
+    assert "architecture:F1" not in rerun_prompts["tests"]
+
+
+def test_revise_route_audit_without_owned_findings_still_checks_regressions(
+    tmp_path: Path,
+) -> None:
+    architecture = _carried("architecture:F1")
+
+    assert engine._findings_owned_by_audit((architecture,), "tests") == ()
+
+    config = _audit_gate_pipeline(tmp_path)
+    ctx = _ctx(tmp_path, config, _Spawn({}), _FakeLoader())
+    tests_lane = engine._audit_phase(config.phases[1], config.phases[1].audits[1])
+    task = engine._review_task(
+        ctx,
+        tests_lane,
+        "review-notes.md",
+        verify=True,
+        prior_findings=engine._findings_owned_by_audit((architecture,), "tests"),
+    )
+
+    assert "VERIFICATION mode" in task
+    assert "bounded regression audit" in task
+    assert "architecture:F1" not in task
 
 
 def _simple_gate_pipeline(tmp_path: Path, budget: int) -> QuillfolioConfig:

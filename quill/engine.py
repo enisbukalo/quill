@@ -1046,6 +1046,14 @@ def _audit_phase(parent: PhaseDef, audit: AuditDef) -> PhaseDef:
     )
 
 
+def _findings_owned_by_audit(
+    findings: tuple[Finding, ...], audit_id: str
+) -> tuple[Finding, ...]:
+    """Return only carried findings whose stable namespace belongs to one audit lane."""
+    prefix = f"{audit_id}:"
+    return tuple(finding for finding in findings if finding.id.startswith(prefix))
+
+
 def _run_concurrent_audits(
     ctx: RunContext, phase: PhaseDef, *, revise_findings: tuple[Finding, ...] = ()
 ) -> PhaseResult:
@@ -1076,12 +1084,18 @@ def _run_concurrent_audits(
             work_artifact = (
                 _review_notes_name(lane, audit.id) if phase.produces_contract else findings
             )
+            # Every lane reruns after a revision so it can catch regressions in its own domain, but
+            # a carried finding remains the responsibility of the lane whose namespace created it.
+            # Broadcasting the aggregate gate findings made sibling lanes copy one another's IDs,
+            # multiplying one defect into collisions during final reconciliation.
+            verify = bool(revise_findings)
+            lane_findings = _findings_owned_by_audit(revise_findings, audit.id)
             task = _review_task(
                 ctx,
                 lane,
                 work_artifact,
-                verify=bool(revise_findings),
-                prior_findings=revise_findings,
+                verify=verify,
+                prior_findings=lane_findings,
             )
             result = _spawn_preloaded_llm(ctx, lane, model=model, task=task)
             repaired = _repair_artifact_failure(
@@ -1099,8 +1113,8 @@ def _run_concurrent_audits(
                     notes=work_artifact,
                     findings=findings,
                     result=repaired,
-                    prior=revise_findings,
-                    verify=bool(revise_findings),
+                    prior=lane_findings,
+                    verify=verify,
                     namespace=audit.id,
                 )
             elif phase.structured_findings:
@@ -1484,9 +1498,9 @@ def _gate(
         # Every *reviewer* on the route re-reads code that was just revised. Run fresh, each one
         # re-derives findings from scratch and reports whatever it happens to notice, so a round can
         # resolve every prior blocker and still be blocked by three brand-new ones — the ticket #19
-        # treadmill. Handing them this gate's carried findings puts them in the same verification
-        # mode the gate itself uses: confirm what was reported, and raise genuine late discovery as
-        # advisory rather than as another blocker.
+        # treadmill. Handing reviewers the gate's carried findings puts them in verification mode:
+        # named audit groups filter that aggregate by lane namespace, while every lane still runs a
+        # bounded regression audit and the finalizer retains the complete cross-lane record.
         result = PhaseResult(Outcome.DONE, "no revise phases ran")
         for index, retry_phase in enumerate(route):
             if index == 0 and retry_phase.type == "producer":
