@@ -21,6 +21,7 @@ from quill.live_usage import LiveUsage
 from quill.phases import SpawnError, extract_receipt
 from quill.preflight import PreflightError
 from quill.runners import Runner, register_runner
+from quill.runners.git_guard import agent_environment
 from quill.spawn_io import run_streaming
 
 # Hermetic spawn: we inherit NOTHING from the user's opencode config. Ambient defaults
@@ -111,23 +112,24 @@ class OpencodeRunner(Runner):
         # OPENCODE_CONFIG_CONTENT is the highest-precedence config source: it overrides the
         # user's global/project opencode.json so an ambient default_agent can't leak in even if
         # the flag handling changes. We layer it on top of the inherited env, not replace it.
-        env = {**os.environ, "OPENCODE_CONFIG_CONTENT": _INLINE_CONFIG}
+        inherited = {**os.environ, "OPENCODE_CONFIG_CONTENT": _INLINE_CONFIG}
         # Force UTF-8 on stdin/stdout: the prompt carries Unicode (arrows, em dashes) from the
         # persona/ticket, and Windows' default cp1252 can't encode them. run_streaming tees the live JSONL
         # stream to stream_path and returns the full stdout for receipt extraction.
-        return run_streaming(
-            cmd,
-            cwd=self.directory,
-            stream_path=stream_path,
-            agent=f"opencode:{agent}",
-            timeout=timeout,
-            input_text=prompt,
-            env=env,
-            on_tool=on_tool,
-            on_usage=on_usage,
-            should_stop=lambda: "stopped by request" if self._stop.is_set() else None,
-            abort_reason=abort_reason,
-        )
+        with agent_environment(agent, inherited) as env:
+            return run_streaming(
+                cmd,
+                cwd=self.directory,
+                stream_path=stream_path,
+                agent=f"opencode:{agent}",
+                timeout=timeout,
+                input_text=prompt,
+                env=env,
+                on_tool=on_tool,
+                on_usage=on_usage,
+                should_stop=lambda: "stopped by request" if self._stop.is_set() else None,
+                abort_reason=abort_reason,
+            )
 
     @override
     def cancel(self) -> None:

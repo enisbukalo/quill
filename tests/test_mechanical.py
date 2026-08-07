@@ -139,6 +139,26 @@ def test_update_head_guard_blocks_a_concurrent_push(tmp_path: Path) -> None:
     assert "moved" in result.message
 
 
+def test_update_head_guard_accepts_the_runs_already_published_local_head(tmp_path: Path) -> None:
+    runner = _FakeRunner(
+        {
+            "gh pr view 7 --json headRefOid": '{"headRefOid":"new"}',
+            "git rev-parse HEAD": "new",
+        }
+    )
+    ctx = _ctx(tmp_path, _deps(git=GitOps(runner)))
+    ctx.pr_number = 7
+    ctx.pr_head_sha = "old"
+
+    result = step_pr_head_guard(
+        ctx, PhaseDef(id="guard", type="mechanical", step="pr_head_guard"), spawn=_noop_spawn
+    )
+
+    assert result.outcome is Outcome.PASS
+    assert "validated local HEAD" in result.message
+    assert ctx.pr_head_sha == "new"
+
+
 def test_feedback_acknowledgement_is_idempotent(tmp_path: Path) -> None:
     runner = _FakeRunner(
         {

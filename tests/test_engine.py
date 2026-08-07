@@ -843,6 +843,61 @@ def test_concurrent_audits_capacity_one_runs_in_configured_order(tmp_path: Path)
     ]
 
 
+def test_concurrent_audit_fresh_retry_only_repeats_failed_lane(tmp_path: Path) -> None:
+    audits = tuple(
+        AuditDef(name, name.title(), f"{name}.md", "qwen")
+        for name in ("architecture", "correctness", "tests")
+    )
+    review = PhaseDef(id="review_impl", type="reviewer", audits=audits)
+    config = _config(tmp_path, [review])
+    spawn = _Spawn(
+        {
+            "review_impl.correctness": [
+                "unparseable review output",
+                "DONE: corrected on fresh attempt",
+            ]
+        }
+    )
+    ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
+    ctx.deps.session_capacity = lambda _model: 3
+
+    final = engine.run_phases(ctx)
+
+    assert final["type"] == "run_done"
+    calls = [agent for agent, _model, _prompt in spawn.calls]
+    assert calls.count("review_impl.architecture") == 1
+    assert calls.count("review_impl.correctness") == 2
+    assert calls.count("review_impl.tests") == 1
+    retries = _events_of(ctx, "retry")
+    assert len(retries) == 1
+    assert retries[0]["phase"] == "review_impl.correctness"
+    assert retries[0]["scope"] == "phase"
+    assert len(_events_of(ctx, "model_loading")) == 1
+
+
+def test_exhausted_concurrent_audit_does_not_restart_successful_siblings(tmp_path: Path) -> None:
+    audits = tuple(
+        AuditDef(name, name.title(), f"{name}.md", "qwen")
+        for name in ("architecture", "correctness", "tests")
+    )
+    review = PhaseDef(id="review_impl", type="reviewer", audits=audits)
+    config = _config(tmp_path, [review])
+    spawn = _Spawn({"review_impl.correctness": "unparseable review output"})
+    ctx = _ctx(tmp_path, config, spawn, _FakeLoader())
+    ctx.deps.session_capacity = lambda _model: 3
+
+    final = engine.run_phases(ctx)
+
+    assert final["type"] == "run_failed"
+    calls = [agent for agent, _model, _prompt in spawn.calls]
+    assert calls.count("review_impl.architecture") == 1
+    assert calls.count("review_impl.correctness") == 2
+    assert calls.count("review_impl.tests") == 1
+    retries = _events_of(ctx, "retry")
+    assert len(retries) == 1
+    assert retries[0]["phase"] == "review_impl.correctness"
+
+
 def test_concurrent_audits_model_load_failure_closes_every_lane(tmp_path: Path) -> None:
     audits = tuple(
         AuditDef(name, name.title(), f"{name}.md", "qwen")
@@ -2171,6 +2226,32 @@ def test_needs_decision_unanswered_halts(tmp_path: Path) -> None:
     final = engine.run_phases(ctx)
     assert final["type"] == "run_halted"
     assert "needs_decision" in _ev_types(ctx)
+
+
+def test_answered_decision_is_injected_into_the_retried_phase(tmp_path: Path) -> None:
+    phases = [
+        PhaseDef(
+            id="plan",
+            type="producer",
+            persona="personas/plan.md",
+            models=("m",),
+            artifact="plan.md",
+        )
+    ]
+    config = _config(tmp_path, phases)
+    spawn = _Spawn(
+        {"plan": ["FAILED: needs decision — which API? | result: plan.md", "DONE: decided"]}
+    )
+    loader = _FakeLoader()
+    ctx = _ctx(tmp_path, config, spawn, loader)
+    ctx.answer_decision = lambda _question: "Use the stable API"
+
+    final = engine.run_phases(ctx)
+
+    assert final["type"] == "run_done"
+    assert "OPERATOR DECISIONS" in spawn.calls[1][2]
+    assert "Question: which API?" in spawn.calls[1][2]
+    assert "Operator answer: Use the stable API" in spawn.calls[1][2]
 
 
 def test_start_phase_skips_earlier(tmp_path: Path) -> None:

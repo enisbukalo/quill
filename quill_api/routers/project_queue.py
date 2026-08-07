@@ -14,7 +14,9 @@ from quill_api.schemas import (
     ProjectQueueCandidate,
     ProjectQueueCandidateGroup,
     ProjectQueueCandidates,
+    ProjectQueueRemoveResponse,
     ProjectQueueView,
+    RemoveProjectQueueItemsRequest,
 )
 from quill_api.workspace import WorkspaceError, validate_repo
 
@@ -82,6 +84,22 @@ def add_project_queue_batch(
     repository = _repository(services, owner, name)
     try:
         return services.project_queue.add_batch(repository, body.tickets)
+    except (GitError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.delete("/{owner}/{name}")
+def remove_project_queue_items(
+    owner: str,
+    name: str,
+    body: RemoveProjectQueueItemsRequest,
+    services: ServicesDep,
+) -> ProjectQueueRemoveResponse:
+    """Remove selected queue entries that have not begun execution."""
+    _ensure_gh()
+    repository = _repository(services, owner, name)
+    try:
+        return services.project_queue.remove_items(repository, body.tickets)
     except (GitError, OSError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 

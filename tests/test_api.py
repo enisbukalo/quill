@@ -270,6 +270,7 @@ def test_lifetime_stats_zero_state(client: TestClient) -> None:
         "repeat_attempts": 0,
         "model_loads": 0,
         "model_load_duration_s": 0.0,
+        "average_power_w": None,
         "models": [],
         "phases": [],
         "recent_runs": [],
@@ -295,6 +296,8 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
     )
     services.history.record(completed)
     services.history.record(failed)
+    services.history.record_system_power_sample(400.0, 1.0)
+    services.history.record_system_power_sample(500.0, 2.0)
     services.history.record_breakdown(
         completed.run_id,
         {
@@ -349,6 +352,7 @@ def test_lifetime_stats_aggregate_runs_and_models(client: TestClient, services: 
     assert body["repeat_attempts"] == 1
     assert body["model_loads"] == 1
     assert body["model_load_duration_s"] == 31.25
+    assert body["average_power_w"] == 450.0
     assert body["phases"] == [
         {
             "phase": "impl",
@@ -579,6 +583,7 @@ def test_telemetry_display_settings_are_validated_and_persisted(client: TestClie
         "cpu_temperature_max_c": 70.0,
         "gpu_temperature_min_c": 20.0,
         "gpu_temperature_max_c": 80.0,
+        "cpu_power_max_w": 180.0,
     }
 
     changed = {
@@ -586,6 +591,7 @@ def test_telemetry_display_settings_are_validated_and_persisted(client: TestClie
         "cpu_temperature_max_c": 75,
         "gpu_temperature_min_c": 30,
         "gpu_temperature_max_c": 85,
+        "cpu_power_max_w": 200,
     }
     assert client.put("/settings/telemetry", json=changed).json() == changed
     assert client.get("/settings/telemetry").json() == changed

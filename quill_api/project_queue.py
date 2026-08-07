@@ -25,6 +25,8 @@ from quill_api.schemas import (
     ProjectQueueBatchResult,
     ProjectQueueItemInfo,
     ProjectQueueAddResult,
+    ProjectQueueRemoveResponse,
+    ProjectQueueRemoveResult,
     ProjectQueueView,
 )
 from quill_api.state import RunState, RunStatus, RunStore
@@ -181,6 +183,68 @@ class ProjectQueueCoordinator:
         """Validate and move one explicit selection, retaining successful partial mutations."""
         with self._lock:
             return self._add_batch_locked(repository, tickets)
+
+    def remove_items(
+        self, repository: ConfiguredRepository, tickets: list[int]
+    ) -> ProjectQueueRemoveResponse:
+        """Move selected unstarted tickets back to their prior status and forget them."""
+        with self._lock:
+            if repository.project_board is None:
+                raise ValueError(f"{repository.name} does not configure a GitHub Project board")
+            results: dict[int, ProjectQueueRemoveResult] = {}
+            targets: dict[str, list[ProjectQueueItem]] = {}
+            for ticket in sorted(tickets):
+                item = self._history.find_active_project_queue_item(repository.name, ticket)
+                if item is None:
+                    results[ticket] = ProjectQueueRemoveResult(
+                        ticket=ticket, removed=False, reason="ticket is not in the active queue"
+                    )
+                elif item.state not in {"stabilizing", "pending"}:
+                    results[ticket] = ProjectQueueRemoveResult(
+                        ticket=ticket,
+                        removed=False,
+                        reason=f"ticket has already started ({item.state})",
+                    )
+                else:
+                    prior_status = item.last_board_status
+                    destination = (
+                        prior_status if prior_status and prior_status != "Queue" else "Backlog"
+                    )
+                    targets.setdefault(destination, []).append(item)
+
+            changed = False
+            for destination, items in targets.items():
+                moves = self._board.move_issues(
+                    repository.name,
+                    [item.ticket for item in items],
+                    repository.project_board,
+                    destination,
+                )
+                by_ticket = {move.ticket: move for move in moves}
+                for item in items:
+                    move = by_ticket[item.ticket]
+                    if not move.success:
+                        results[item.ticket] = ProjectQueueRemoveResult(
+                            ticket=item.ticket,
+                            removed=False,
+                            reason=move.error or "GitHub Project update failed",
+                        )
+                    elif self._history.remove_pending_project_queue_item(item.item_id):
+                        changed = True
+                        results[item.ticket] = ProjectQueueRemoveResult(
+                            ticket=item.ticket, removed=True
+                        )
+                    else:
+                        results[item.ticket] = ProjectQueueRemoveResult(
+                            ticket=item.ticket,
+                            removed=False,
+                            reason="ticket started before it could be removed",
+                        )
+            if changed:
+                self._changed()
+            return ProjectQueueRemoveResponse(
+                results=[results[ticket] for ticket in sorted(results)]
+            )
 
     def _add_batch_locked(
         self, repository: ConfiguredRepository, tickets: list[int]
@@ -482,7 +546,7 @@ class ProjectQueueCoordinator:
             epic_number=item.parent_number,
             epic_title=item.parent_title,
             workflow=repository.default_workflow,
-            last_board_status="Queue",
+            last_board_status=item.status or "Backlog",
         )
 
     def _queue_repositories(self) -> tuple[ConfiguredRepository, ...]:

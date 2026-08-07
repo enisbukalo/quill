@@ -29,6 +29,7 @@ class CpuTelemetry:
     memory_total_mb: float | None = None
     name: str | None = None
     fan_percent: float | None = None
+    power_draw_w: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,8 @@ class GpuTelemetry:
     memory_total_mb: float | None = None
     sampled_at: float | None = None
     fan_percent: float | None = None
+    power_draw_w: float | None = None
+    power_limit_w: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +85,15 @@ class SystemTelemetrySnapshot:
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def combined_power_draw_w(snapshot: SystemTelemetrySnapshot) -> float | None:
+    """Return CPU package plus every reported GPU board draw, or ``None`` if incomplete."""
+    cpu_power = snapshot.cpu.power_draw_w
+    gpu_powers = [gpu.power_draw_w for gpu in snapshot.gpus]
+    if cpu_power is None or not gpu_powers or any(power is None for power in gpu_powers):
+        return None
+    return round(cpu_power + sum(power for power in gpu_powers if power is not None), 1)
 
 
 def _number(value: object) -> float | None:
@@ -227,6 +239,105 @@ class VllmThroughputSampler:
         return round(sum(values) / len(values), 1) if values else None
 
 
+class PerfCpuPowerSampler:
+    """Continuously derive CPU package watts from Linux's RAPL perf event."""
+
+    def __init__(
+        self,
+        *,
+        interval_s: float = 0.25,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.interval_s = interval_s
+        self._monotonic = monotonic
+        self._process: subprocess.Popen[str] | None = None
+        self._thread: threading.Thread | None = None
+        self._latest_w: float | None = None
+        self._sampled_at = -math.inf
+        self._previous_perf_time = 0.0
+
+    def start(self) -> None:
+        if self._process is not None:
+            return
+        command = [
+            "perf",
+            "stat",
+            "-a",
+            "-e",
+            "power/energy-pkg/",
+            "-I",
+            str(round(self.interval_s * 1000)),
+            "--no-big-num",
+            "--field-separator=,",
+            "--",
+            "sleep",
+            "infinity",
+        ]
+        try:
+            self._process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except OSError:
+            self._process = None
+            return
+        self._thread = threading.Thread(
+            target=self._read_output,
+            name="quill-cpu-power",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        process, self._process = self._process, None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        self._latest_w = None
+        self._previous_perf_time = 0.0
+
+    def power_draw_w(self) -> float | None:
+        if self._monotonic() - self._sampled_at > self.interval_s * 4:
+            return None
+        return self._latest_w
+
+    def _read_output(self) -> None:
+        process = self._process
+        if process is None or process.stderr is None:
+            return
+        for line in process.stderr:
+            self._record_perf_line(line)
+
+    def _record_perf_line(self, line: str) -> None:
+        """Consume one ``perf stat -I -x,`` row."""
+        try:
+            row = next(csv.reader([line]))
+        except (csv.Error, StopIteration):
+            return
+        if len(row) < 4 or "energy-pkg" not in row[3]:
+            return
+        perf_time = _number(row[0])
+        energy_j = _number(row[1])
+        if perf_time is None or energy_j is None or energy_j < 0:
+            return
+        elapsed = perf_time - self._previous_perf_time
+        self._previous_perf_time = perf_time
+        if elapsed <= 0:
+            return
+        self._latest_w = round(energy_j / elapsed, 1)
+        self._sampled_at = self._monotonic()
+
+
 class LinuxTelemetryReader:
     """Read Linux CPU counters/sensors and NVIDIA metrics without blocking request handlers."""
 
@@ -237,12 +348,14 @@ class LinuxTelemetryReader:
         cpu_fan_hwmon_name: str | None = None,
         cpu_fan_pwm_channel: int | None = None,
         hwmon_root: Path = Path("/sys/class/hwmon"),
+        cpu_power: PerfCpuPowerSampler | None = None,
     ) -> None:
         self._previous_cpu: tuple[int, int] | None = None
         self._cpu_name = self._read_cpu_name()
         self._cpu_fan_hwmon_name = cpu_fan_hwmon_name
         self._cpu_fan_pwm_channel = cpu_fan_pwm_channel
         self._hwmon_root = hwmon_root
+        self._cpu_power = cpu_power or PerfCpuPowerSampler()
         self._nvml: Any = None
         self._last_fallback = 0.0
         self._fallback_gpus: tuple[GpuTelemetry, ...] = ()
@@ -250,6 +363,7 @@ class LinuxTelemetryReader:
 
     def start(self) -> None:
         self._vllm.start()
+        self._cpu_power.start()
         try:
             import pynvml  # type: ignore[import-untyped]
 
@@ -260,6 +374,7 @@ class LinuxTelemetryReader:
 
     def stop(self) -> None:
         self._vllm.stop()
+        self._cpu_power.stop()
         if self._nvml is not None:
             try:
                 self._nvml.nvmlShutdown()
@@ -278,6 +393,7 @@ class LinuxTelemetryReader:
                 *self._memory(),
                 self._cpu_name,
                 fan_percent=self._cpu_fan_percent(),
+                power_draw_w=self._cpu_power.power_draw_w(),
             ),
             gpus=self._gpus(now),
             vllm=self._vllm.sample(),
@@ -419,6 +535,8 @@ class LinuxTelemetryReader:
                             memory_total_mb=round(memory.total / 1024 / 1024, 1),
                             sampled_at=now,
                             fan_percent=self._nvml_fan_percent(handle),
+                            power_draw_w=self._nvml_power_w(handle),
+                            power_limit_w=self._nvml_power_limit_w(handle),
                         )
                     )
                 return tuple(result)
@@ -430,7 +548,7 @@ class LinuxTelemetryReader:
         try:
             command = [
                 "nvidia-smi",
-                "--query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total,fan.speed",
+                "--query-gpu=index,name,utilization.gpu,temperature.gpu,memory.used,memory.total,fan.speed,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
             ]
             output = subprocess.run(
@@ -450,6 +568,8 @@ class LinuxTelemetryReader:
                         _number(row[5]),
                         now,
                         _number(row[6]),
+                        _number(row[7]) if len(row) > 7 else None,
+                        _number(row[8]) if len(row) > 8 else None,
                     )
                 )
             self._fallback_gpus = tuple(sorted(rows, key=lambda gpu: gpu.index))
@@ -465,6 +585,22 @@ class LinuxTelemetryReader:
             return None
         return value if 0.0 <= value <= 100.0 else None
 
+    def _nvml_power_w(self, handle: object) -> float | None:
+        """Return current board power in watts; NVML reports integer milliwatts."""
+        try:
+            value = float(self._nvml.nvmlDeviceGetPowerUsage(handle)) / 1000.0
+        except Exception:  # noqa: BLE001 - unsupported power telemetry is a valid state
+            return None
+        return round(value, 1) if value >= 0 else None
+
+    def _nvml_power_limit_w(self, handle: object) -> float | None:
+        """Return the enforced board power limit in watts when NVML exposes it."""
+        try:
+            value = float(self._nvml.nvmlDeviceGetEnforcedPowerLimit(handle)) / 1000.0
+        except Exception:  # noqa: BLE001 - unsupported power limits are a valid state
+            return None
+        return round(value, 1) if value > 0 else None
+
 
 class SystemTelemetryMonitor:
     def __init__(
@@ -472,10 +608,12 @@ class SystemTelemetryMonitor:
         reader: LinuxTelemetryReader,
         interval_s: float = 0.125,
         switch_state: Callable[[], ModelSwitchTelemetry] | None = None,
+        on_sample: Callable[[SystemTelemetrySnapshot], None] | None = None,
     ) -> None:
         self.reader = reader
         self.interval_s = interval_s
         self._switch_state = switch_state
+        self._on_sample = on_sample
         self.latest = SystemTelemetrySnapshot()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._subscribers: set[asyncio.Queue[SystemTelemetrySnapshot]] = set()
@@ -510,6 +648,11 @@ class SystemTelemetryMonitor:
                 try:
                     snapshot = replace(snapshot, model_switch=self._switch_state())
                 except Exception:  # noqa: BLE001 - never let a switch probe stop the gauges
+                    pass
+            if self._on_sample is not None:
+                try:
+                    self._on_sample(snapshot)
+                except Exception:  # noqa: BLE001 - persistence must never stop live telemetry
                     pass
             self.latest = snapshot
             if self._loop is not None:

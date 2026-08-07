@@ -46,6 +46,7 @@ class FakeBoard:
             id="project",
             status_field_id="status",
             status_options=(
+                ProjectStatusOption("backlog", "Backlog"),
                 ProjectStatusOption("queue", "Queue"),
                 ProjectStatusOption("done", "Done"),
             ),
@@ -158,6 +159,39 @@ def test_partial_batch_retains_only_successful_project_mutations(
     assert result.batch_id is not None
     assert [(item.ticket, item.queued) for item in result.results] == [(3, True), (16, False)]
     assert [item.ticket for item in history.list_project_queue_items()] == [3]
+
+
+def test_remove_items_returns_unstarted_tickets_to_their_prior_status(
+    setup: tuple[ProjectQueueCoordinator, History, FakeBoard, list[RunState], list[float]],
+) -> None:
+    coordinator, history, board, _admitted, _now = setup
+    coordinator.add_batch(REPOSITORY, [3, 16])
+
+    result = coordinator.remove_items(REPOSITORY, [3])
+
+    assert [(item.ticket, item.removed, item.reason) for item in result.results] == [
+        (3, True, None)
+    ]
+    assert next(item for item in board.items if item.number == 3).status == "Backlog"
+    assert history.find_active_project_queue_item("me/game", 3) is None
+    assert history.find_active_project_queue_item("me/game", 16) is not None
+
+
+def test_remove_items_rejects_work_that_has_started(
+    setup: tuple[ProjectQueueCoordinator, History, FakeBoard, list[RunState], list[float]],
+) -> None:
+    coordinator, history, board, _admitted, now = setup
+    coordinator.add_batch(REPOSITORY, [3])
+    coordinator.scan_once()
+    now[0] += 5
+    coordinator.scan_once()
+
+    result = coordinator.remove_items(REPOSITORY, [3])
+
+    assert result.results[0].removed is False
+    assert result.results[0].reason == "ticket has already started (running)"
+    assert next(item for item in board.items if item.number == 3).status == "Queue"
+    assert history.find_active_project_queue_item("me/game", 3) is not None
 
 
 def test_changed_snapshot_waits_five_seconds_then_admits_only_numeric_head(

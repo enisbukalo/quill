@@ -14,7 +14,12 @@ from quill.project_board import (
 )
 from quill_api.app import create_app
 from quill_api.repository_registry import ConfiguredRepository
-from quill_api.schemas import ProjectQueueBatchResult, ProjectQueueAddResult
+from quill_api.schemas import (
+    ProjectQueueAddResult,
+    ProjectQueueBatchResult,
+    ProjectQueueRemoveResponse,
+    ProjectQueueRemoveResult,
+)
 from quill_api.services import Services
 from quill_api.settings import Settings
 
@@ -146,5 +151,39 @@ def test_batch_post_rejects_duplicate_tickets_before_github(tmp_path: Path) -> N
     client = TestClient(create_app(services))
 
     response = client.post("/project-queue/me/game", json={"tickets": [3, 3]})
+
+    assert response.status_code == 422
+
+
+def test_queue_delete_returns_per_ticket_removal_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services = _services(tmp_path)
+    monkeypatch.setattr(
+        services.project_queue,
+        "remove_items",
+        lambda _repo, _tickets: ProjectQueueRemoveResponse(
+            results=[
+                ProjectQueueRemoveResult(ticket=3, removed=True),
+                ProjectQueueRemoveResult(ticket=16, removed=False, reason="already running"),
+            ]
+        ),
+    )
+    client = TestClient(create_app(services))
+
+    response = client.request("DELETE", "/project-queue/me/game", json={"tickets": [3, 16]})
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {"ticket": 3, "removed": True, "reason": None},
+        {"ticket": 16, "removed": False, "reason": "already running"},
+    ]
+
+
+def test_queue_delete_rejects_duplicate_tickets(tmp_path: Path) -> None:
+    services = _services(tmp_path)
+    client = TestClient(create_app(services))
+
+    response = client.request("DELETE", "/project-queue/me/game", json={"tickets": [3, 3]})
 
     assert response.status_code == 422

@@ -135,6 +135,26 @@ class ProjectQueueBatchResult(BaseModel):
     results: list[ProjectQueueAddResult] = Field(default_factory=list)
 
 
+class RemoveProjectQueueItemsRequest(BaseModel):
+    tickets: list[int] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def tickets_are_unique(self) -> RemoveProjectQueueItemsRequest:
+        if len(self.tickets) != len(set(self.tickets)):
+            raise ValueError("tickets must be unique")
+        return self
+
+
+class ProjectQueueRemoveResult(BaseModel):
+    ticket: int
+    removed: bool
+    reason: str | None = None
+
+
+class ProjectQueueRemoveResponse(BaseModel):
+    results: list[ProjectQueueRemoveResult] = Field(default_factory=list)
+
+
 class ProjectQueueItemInfo(BaseModel):
     ticket: int
     title: str
@@ -429,6 +449,7 @@ class LifetimeStats(BaseModel):
     repeat_attempts: int = 0
     model_loads: int = 0
     model_load_duration_s: float = 0.0
+    average_power_w: float | None = None
     models: list[ModelLifetimeStats] = Field(default_factory=list)
     phases: list[PhaseLifetimeStats] = Field(default_factory=list)
     recent_runs: list[RunLifetimePoint] = Field(default_factory=list)
@@ -658,6 +679,7 @@ class CpuTelemetryInfo(BaseModel):
     memory_total_mb: float | None = None
     name: str | None = None
     fan_percent: float | None = None
+    power_draw_w: float | None = None
 
 
 class GpuTelemetryInfo(BaseModel):
@@ -669,6 +691,8 @@ class GpuTelemetryInfo(BaseModel):
     memory_total_mb: float | None = None
     sampled_at: float | None = None
     fan_percent: float | None = None
+    power_draw_w: float | None = None
+    power_limit_w: float | None = None
 
 
 class VllmThroughputTelemetryInfo(BaseModel):
@@ -694,6 +718,7 @@ class TelemetryDisplaySettings(BaseModel):
     cpu_temperature_max_c: float = Field(default=70.0, ge=-20.0, le=150.0)
     gpu_temperature_min_c: float = Field(default=20.0, ge=-20.0, le=150.0)
     gpu_temperature_max_c: float = Field(default=80.0, ge=-20.0, le=150.0)
+    cpu_power_max_w: float = Field(default=180.0, ge=1.0, le=2000.0)
 
     @model_validator(mode="after")
     def validate_ranges(self) -> TelemetryDisplaySettings:

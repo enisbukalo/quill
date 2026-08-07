@@ -39,6 +39,7 @@ from quill_api.telemetry import (
     ModelSwitchTelemetry,
     SystemTelemetryMonitor,
     VllmThroughputSampler,
+    combined_power_draw_w,
 )
 from quill_api.workspace import (
     WorkspaceManager,
@@ -85,6 +86,9 @@ class Services:
             ),
             self.settings.telemetry_interval_s,
             switch_state=lambda: ModelSwitchTelemetry(**asdict(self.model_switcher.state)),
+            on_sample=lambda snapshot: self.history.record_system_power_sample(
+                combined_power_draw_w(snapshot), snapshot.sampled_at
+            ),
         )
 
         self.manager = RunManager(
@@ -215,6 +219,7 @@ class Services:
         self.project_queue.stop()
         self.queue.stop()
         self.telemetry.stop()
+        self.history.flush_system_power_samples()
 
     def _admit_pr_review(self, candidate: ReviewCandidate) -> bool:
         """Persist and queue one automatic review for an exact PR head."""

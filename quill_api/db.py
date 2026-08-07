@@ -15,6 +15,7 @@ startup so the list never claims a run is live when no thread is behind it.
 from __future__ import annotations
 
 import time
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -450,6 +451,12 @@ class History:
         Base.metadata.create_all(self._engine)
         self._migrate()
         self._backfill_lifetime()
+        stored_power = self.get_setting("system_power_average") or {}
+        self._power_lock = threading.Lock()
+        self._power_watt_seconds = float(stored_power.get("watt_seconds") or 0.0)
+        self._power_duration_s = float(stored_power.get("duration_s") or 0.0)
+        self._power_previous: tuple[float, float] | None = None
+        self._power_last_flush = -float("inf")
 
     def _migrate(self) -> None:
         """Apply small, idempotent SQLite additions that ``create_all`` cannot add."""
@@ -1427,4 +1434,48 @@ class History:
         """Persist one complete application setting document."""
         with Session(self._engine) as session:
             session.merge(AppSettingRow(key=key, value=value, updated_at=time.time()))
+            session.commit()
+
+    def record_system_power_sample(self, power_w: float | None, sampled_at: float | None) -> None:
+        """Accumulate a time-weighted full-system power average with bounded write frequency."""
+        if power_w is None or sampled_at is None or power_w < 0:
+            with self._power_lock:
+                self._power_previous = None
+            return
+        with self._power_lock:
+            previous, self._power_previous = self._power_previous, (sampled_at, power_w)
+            if previous is None:
+                return
+            elapsed = sampled_at - previous[0]
+            if elapsed <= 0 or elapsed > 5.0:
+                return
+            self._power_watt_seconds += ((previous[1] + power_w) / 2.0) * elapsed
+            self._power_duration_s += elapsed
+            if sampled_at - self._power_last_flush >= 5.0:
+                self._flush_system_power_locked()
+                self._power_last_flush = sampled_at
+
+    def average_system_power_w(self) -> float | None:
+        """Return the lifetime time-weighted system power average."""
+        with self._power_lock:
+            if self._power_duration_s <= 0:
+                return None
+            return round(self._power_watt_seconds / self._power_duration_s, 1)
+
+    def flush_system_power_samples(self) -> None:
+        """Persist accumulated power statistics during a clean service shutdown."""
+        with self._power_lock:
+            self._flush_system_power_locked()
+
+    def _flush_system_power_locked(self) -> None:
+        if self._power_duration_s <= 0:
+            return
+        value = {
+            "watt_seconds": self._power_watt_seconds,
+            "duration_s": self._power_duration_s,
+        }
+        with Session(self._engine) as session:
+            session.merge(
+                AppSettingRow(key="system_power_average", value=value, updated_at=time.time())
+            )
             session.commit()

@@ -118,6 +118,11 @@ export const QuillApi = {
       method: "POST",
       body: { tickets },
     }),
+  removeProjectQueueItems: (repo, tickets) =>
+    apiFetch(`/project-queue/${relativePath(repo)}`, {
+      method: "DELETE",
+      body: { tickets },
+    }),
   start: (request) => apiFetch("/runs", { method: "POST", body: request }),
   runs: (filters, signal) => apiFetch(`/runs${buildQuery(filters)}`, { signal }),
   deleteRuns: (runIds) => apiFetch("/runs", { method: "DELETE", body: { run_ids: runIds } }),

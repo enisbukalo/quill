@@ -715,13 +715,18 @@ test("telemetry UI uses persisted scales and horizontal in-bar readings", async 
   assert.match(app, /cpu_temperature_min_c: 20/);
   assert.match(app, /cpu_temperature_max_c: 70/);
   assert.match(app, /gpu_temperature_max_c: 80/);
+  assert.match(app, /cpu_power_max_w: 180/);
   assert.match(app, /Threadripper\\b/);
+  assert.match(app, /gaugeMetric\("power", "POWER"\).*gaugeMetric\("load", "LOAD"\)/s);
   assert.match(app, /gaugeMetric\("temperature", "TEMP"\)/);
   assert.match(app, /gaugeMetric\("fan", "FAN"\)/);
   assert.match(app, /--temperature-load/);
   assert.match(styles, /\.gauge-horizontal-well/);
   assert.match(styles, /\.gauge-value[^}]*position: absolute/);
   assert.match(styles, /\.gauge-load \{ --bar-color: var\(--cyan\)/);
+  assert.match(styles, /\.gauge-power \{ --bar-color: var\(--green\)/);
+  assert.match(styles, /\.gauge-power \{[^}]*linear-gradient\(to right, var\(--green\) 0%, var\(--amber\) 55%, var\(--red\) 100%\)/);
+  assert.match(app, /formatPercent\(powerPercent\).*power\.toFixed\(1\).*powerLimit\.toFixed\(1\)/s);
   assert.match(styles, /\.gauge-memory \{ --bar-color: var\(--memory-color, var\(--green\)\)/);
   assert.match(app, /const memoryHue = memoryPercent === null \? 120 : 120 \* \(1 - memoryPercent \/ 100\)/);
   assert.match(styles, /\.gauge-memory \{[^}]*linear-gradient\(to right, var\(--green\) 0%, var\(--amber\) 55%, var\(--red\) 100%\)/);
@@ -743,8 +748,20 @@ test("system telemetry header shows the loaded model and rolling vLLM rates", as
   assert.match(source, /generation_tokens_per_second/);
   assert.match(source, /loaded_models/);
   assert.match(source, /throughputMetric\("model", "MODEL"\)/);
+  assert.match(source, /throughputMetric\("generation", "GENERATION"\).*throughputMetric\("system-power", "SYSTEM POWER", "— W"\)/s);
+  assert.match(source, /CPU package plus all reported NVIDIA GPU board power/);
+  assert.match(source, /draws\.reduce.*limits\.reduce/s);
+  assert.match(source, /formatPercent\(percent\).*current\.toFixed\(1\).*maximum\.toFixed\(1\)/s);
   assert.match(source, /toFixed\(1\).*tok\/s/s);
-  assert.match(styles, /\.vllm-throughput/);
+  assert.match(styles, /\.vllm-throughput \{[^}]*repeat\(4,/);
+  assert.match(styles, /data-throughput="system-power"/);
+});
+
+test("overview totals include the persisted average system power", async () => {
+  const source = await readFile(new URL("../../quill_api/web/app.mjs", import.meta.url), "utf8");
+  assert.match(source, /compactLifetimeMetric\("Average power"/);
+  assert.match(source, /stats\.average_power_w/);
+  assert.match(source, /toFixed\(1\).* W/s);
 });
 
 test("run failures present the stable category before raw diagnostic detail", async () => {
@@ -884,6 +901,15 @@ test("run actions and tones follow authoritative status", () => {
   assert.equal(statusTone("running"), "active");
   assert.equal(statusTone("done"), "success");
   assert.equal(statusTone("failed"), "danger");
+});
+
+test("decision controls remain visible on every selected-run tab", async () => {
+  const app = await readFile(new URL("../../quill_api/web/app.mjs", import.meta.url), "utf8");
+  assert.match(app, /result\.append\(tabs\);\s*if \(canAnswerRun\(state\.runDetail\.status\)\) result\.append\(renderDecisionForm\(state\.runDetail\)\)/);
+  assert.match(app, /run\.phase === "head_guard"/);
+  assert.match(app, /"Stop stale run"/);
+  assert.match(app, /QuillApi\.stop\(run\.run_id\)/);
+  assert.match(app, /const submit = element\("button", "button warning", "Send decision"\)/);
 });
 
 test("live run label prefers truthful internal activity over configured phase", () => {
@@ -1071,6 +1097,7 @@ test("project queue client methods preserve repository paths and batch bodies", 
     await QuillApi.projectQueue();
     await QuillApi.projectQueueCandidates("me/proj");
     await QuillApi.addProjectQueueBatch("me/proj", [3, 16]);
+    await QuillApi.removeProjectQueueItems("me/proj", [3, 16]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1078,6 +1105,7 @@ test("project queue client methods preserve repository paths and batch bodies", 
     { path: "/project-queue", method: "GET", body: null },
     { path: "/project-queue/me/proj/candidates", method: "GET", body: null },
     { path: "/project-queue/me/proj", method: "POST", body: JSON.stringify({ tickets: [3, 16] }) },
+    { path: "/project-queue/me/proj", method: "DELETE", body: JSON.stringify({ tickets: [3, 16] }) },
   ]);
 });
 
@@ -1822,9 +1850,15 @@ test("queue navigation, grouped selection, SSE, and overview snapshot are wired"
   assert.match(app, /if \(!ticket\.selectable\) continue/);
   assert.match(app, /"Standalone tickets"/);
   assert.match(app, /Add To Queue/);
+  assert.match(app, /Remove From Queue/);
+  assert.match(app, /state\.queuePage\.queuedSelected/);
+  assert.match(app, /QuillApi\.removeProjectQueueItems\(repo, tickets\)/);
+  assert.match(app, /ticket has already started|cannot be removed after starting/);
   assert.match(app, /event\.type === "project_queue_updated"/);
   assert.match(app, /state\.projectQueue = event\.project_queue \|\| state\.projectQueue/);
   assert.match(app, /dataset\.liveRegion = "project-queue-order"/);
+  assert.match(styles, /\.project-queue-actions/);
+  assert.match(styles, /\.project-queue-error-row \.notice \{ display: block;/);
   assert.doesNotMatch(app, /Skip ticket|Advance queue/);
 
   assert.match(app, /function renderOverviewRunPulse/);

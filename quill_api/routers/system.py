@@ -380,6 +380,7 @@ def lifetime_stats(services: ServicesDep) -> LifetimeStats:
         repeat_attempts=activity["repeat_attempts"],
         model_loads=model_load_count,
         model_load_duration_s=model_load_duration_s,
+        average_power_w=services.history.average_system_power_w(),
         models=model_rows,
         phases=phase_rows,
         recent_runs=recent_runs[-RECENT_RUN_WINDOW:],

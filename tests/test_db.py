@@ -241,6 +241,19 @@ def test_application_setting_round_trip_and_replace() -> None:
     assert history.get_setting("telemetry_display") == {"cpu_temperature_min_c": 25.0}
 
 
+def test_system_power_average_is_time_weighted_and_persistent(tmp_path: Path) -> None:
+    database = tmp_path / "power.db"
+    history = History(f"sqlite+pysqlite:///{database}")
+    history.record_system_power_sample(100.0, 10.0)
+    history.record_system_power_sample(200.0, 11.0)
+    history.record_system_power_sample(300.0, 12.0)
+    assert history.average_system_power_w() == 200.0
+    history.flush_system_power_samples()
+
+    restored = History(f"sqlite+pysqlite:///{database}")
+    assert restored.average_system_power_w() == 200.0
+
+
 def test_repo_filter_finds_legacy_url_shaped_history() -> None:
     h = History()
     state = _state("legacy", 1, RunStatus.DONE)

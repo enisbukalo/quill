@@ -33,6 +33,7 @@ from quill.live_usage import LiveUsage
 from quill.phases import SpawnError, _normalize_receipt_line
 from quill.preflight import PreflightError
 from quill.runners import Runner, register_runner
+from quill.runners.git_guard import agent_environment
 from quill.spawn_io import run_streaming
 
 _VLLM_USAGE_EXTENSION = Path(__file__).parents[1] / "pi_extensions" / "vllm_live_usage.mjs"
@@ -302,11 +303,8 @@ class PiRunner(Runner):
         executable = shutil.which("pi")
         if executable is None:
             raise SpawnError("could not launch pi: not found on PATH")
-        # ``agent`` (the phase id) is intentionally ignored, exactly as the opencode runner ignores
-        # it: quill's persona carries the role and rides the STDIN prompt, not a CLI flag. Passing
-        # it to ``--append-system-prompt`` would inject the bare id ("plan"/"impl") as system-prompt
-        # text — meaningless, and inconsistent with opencode. See OpencodeRunner.spawn.
-        _ = agent
+        # ``agent`` is the phase id. The persona still carries the model's role; Quill uses the id
+        # only to enforce that Git mutations are reserved for delivery phases.
         # The prompt is large (persona + ticket) and is passed on STDIN, not
         # as an argv element: a fat prompt blows the Windows command-line limit, and pi's ``@<file>``
         # syntax hangs under ``-p --mode json`` headless. ``pi -p`` (bare flag) reads the message
@@ -332,19 +330,21 @@ class PiRunner(Runner):
             _PI_SYSTEM_CONTRACT,
             "-a",
         ]
-        return run_streaming(
-            cmd,
-            cwd=self.directory,
-            stream_path=stream_path,
-            agent=f"pi:{agent}",
-            timeout=timeout,
-            input_text=prompt,
-            env={**os.environ, "QUILL_PI_EXTENSION_PATH": str(_VLLM_USAGE_EXTENSION)},
-            on_tool=on_tool,
-            on_usage=on_usage,
-            should_stop=lambda: "stopped by request" if self._stop.is_set() else None,
-            abort_reason=abort_reason,
-        )
+        inherited = {**os.environ, "QUILL_PI_EXTENSION_PATH": str(_VLLM_USAGE_EXTENSION)}
+        with agent_environment(agent, inherited) as env:
+            return run_streaming(
+                cmd,
+                cwd=self.directory,
+                stream_path=stream_path,
+                agent=f"pi:{agent}",
+                timeout=timeout,
+                input_text=prompt,
+                env=env,
+                on_tool=on_tool,
+                on_usage=on_usage,
+                should_stop=lambda: "stopped by request" if self._stop.is_set() else None,
+                abort_reason=abort_reason,
+            )
 
     @override
     def cancel(self) -> None:

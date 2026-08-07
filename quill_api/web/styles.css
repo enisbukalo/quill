@@ -344,8 +344,13 @@ textarea { min-height: 280px; resize: vertical; font: .78rem/1.55 ui-monospace, 
 .project-batch-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: .65rem; padding: .65rem .75rem; }
 .project-queue-table-wrap { border-width: 1px 0 0; border-radius: 0; }
 .project-queue-table { min-width: 860px; }
+.project-queue-table input[type="checkbox"] { width: 1rem; height: 1rem; accent-color: var(--cyan); }
+.project-queue-actions { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; margin-bottom: .8rem; }
+.project-queue-actions .notice { margin-right: auto; }
 .project-queue-blocked td { background: rgba(255,84,112,.045); }
-.project-queue-error-row td { padding-top: 0; }
+.project-queue-error-row td { padding: .4rem .72rem .75rem; }
+.project-queue-error-row .notice { display: block; min-width: 0; white-space: normal; }
+.project-queue-error-row .diagnostic-output { max-width: 100%; }
 .queue-empty-state { min-height: 110px; }
 .queue-candidate-controls { display: grid; grid-template-columns: minmax(240px, 480px); margin-bottom: .8rem; }
 .queue-candidate-table { min-width: 780px; }
@@ -444,13 +449,14 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .pulse-meta { display: grid; gap: .2rem; margin-top: .6rem; color: var(--muted); font: .72rem ui-monospace, monospace; }
 .resource-panel { border-color: rgba(69,239,255,.25); }
 .resource-panel .panel-header { align-items: start; }
-.vllm-throughput { display: grid; grid-template-columns: repeat(3, minmax(108px, auto)); gap: .4rem; margin-left: auto; }
+.vllm-throughput { display: grid; grid-template-columns: repeat(4, minmax(108px, auto)); gap: .4rem; margin-left: auto; }
 .panel .vllm-throughput { margin-left: 0; margin-top: .7rem; justify-content: start; }
 .vllm-throughput-metric { display: grid; gap: .12rem; min-width: 108px; padding: .32rem .48rem; border: 1px solid rgba(69,239,255,.22); border-radius: 6px; background: rgba(69,239,255,.035); font-family: ui-monospace, monospace; text-align: right; }
 .vllm-throughput-label { color: var(--muted); font-size: .44rem; letter-spacing: .1em; }
 .vllm-throughput-value { color: var(--cyan); font-size: .68rem; white-space: nowrap; }
+.vllm-throughput-metric[data-throughput="system-power"] { min-width: 170px; }
 .resource-gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); align-items: stretch; gap: .75rem; width: 100%; min-width: 0; padding: .2rem; }
-.resource-gauge { --load: 0; --memory-load: 0; --temperature-load: 0; --fan-load: 0; display: grid; grid-template-rows: auto 1fr; gap: .55rem; min-width: 0; padding: .7rem .8rem; border: 1px solid rgba(69,239,255,.28); border-radius: 8px; color: var(--cyan); background: rgba(69,239,255,.035); font: 700 .62rem ui-monospace, monospace; }
+.resource-gauge { --power-load: 0; --load: 0; --memory-load: 0; --temperature-load: 0; --fan-load: 0; display: grid; grid-template-rows: auto 1fr; gap: .55rem; min-width: 0; padding: .7rem .8rem; border: 1px solid rgba(69,239,255,.28); border-radius: 8px; color: var(--cyan); background: rgba(69,239,255,.035); font: 700 .62rem ui-monospace, monospace; }
 .resource-gauge[data-gauge^="gpu"] { color: var(--magenta); border-color: rgba(255,75,216,.3); background: rgba(255,75,216,.035); }
 .gauge-header { position: relative; min-height: 2.5em; padding-inline: 3.6rem; }
 .gauge-vendor-slot { position: absolute; top: 0; left: 0; z-index: 1; }
@@ -464,6 +470,7 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .gauge-horizontal-well { position: relative; height: 22px; overflow: hidden; border: 1px solid var(--bar-color); border-radius: 6px; color: var(--bar-color); background: rgba(2,2,12,.86); box-shadow: inset 0 0 10px rgba(0,0,0,.72), 0 0 7px color-mix(in srgb, var(--bar-color) 30%, transparent); }
 .gauge-horizontal-fill { position: absolute; inset: 2px; border-radius: 3px; background: var(--bar-gradient, linear-gradient(to right, var(--bar-color), var(--bar-end))); box-shadow: 0 0 9px var(--bar-color); clip-path: inset(0 calc(100% - var(--bar-load) * 1%) 0 0); }
 .gauge-value { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; padding: 0 .3rem; color: #fff; font-size: .57rem; letter-spacing: .02em; text-align: center; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 4px #000; }
+.gauge-power { --bar-color: var(--green); --bar-load: var(--power-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }
 .gauge-load { --bar-color: var(--cyan); --bar-end: var(--violet); --bar-load: var(--load); }
 .gauge-memory { --bar-color: var(--memory-color, var(--green)); --bar-load: var(--memory-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }
 .gauge-temperature { --bar-color: var(--temperature-color, var(--green)); --bar-load: var(--temperature-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }

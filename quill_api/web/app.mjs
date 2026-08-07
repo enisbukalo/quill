@@ -62,12 +62,20 @@ const state = {
     cpu_temperature_max_c: 70,
     gpu_temperature_min_c: 20,
     gpu_temperature_max_c: 80,
+    cpu_power_max_w: 180,
   },
   stats: null,
   init: null,
   queue: { active: null, queued: [], depth: 0 },
   projectQueue: { batches: [], depth: 0 },
-  queuePage: { repo: "", groups: [], selected: new Set(), result: null },
+  queuePage: {
+    repo: "",
+    groups: [],
+    selected: new Set(),
+    queuedSelected: new Set(),
+    result: null,
+    removeResult: null,
+  },
   //: repository name -> { "50": "Add grid coordinates…" }. Names runs and chart points after their
   //: tickets. Fetched per repository because issue numbers only mean anything within one.
   ticketTitles: {},
@@ -374,6 +382,7 @@ async function refreshProjectQueue({ quiet = false } = {}) {
   setLoading("project-queue", true);
   try {
     state.projectQueue = await QuillApi.projectQueue(controller.signal);
+    pruneQueuedSelection();
     delete state.errors["project-queue"];
   } catch (error) {
     handleError(error, "project-queue", !quiet);
@@ -835,6 +844,7 @@ function updateProjectQueueOrder() {
   if (state.route.section !== "queue") return;
   const mounted = document.querySelector('[data-live-region="project-queue-order"]');
   if (!mounted) return;
+  pruneQueuedSelection();
   const next = renderProjectQueueOrder();
   mounted.replaceChildren(...next.childNodes);
 }
@@ -910,7 +920,7 @@ function renderRunPulse(run = activeDisplayRun()) {
   append(result, visual, copy);
   const resources = panel("System Telemetry", "resource-panel");
   resources.dataset.systemTelemetry = "true";
-  resources.querySelector(".panel-header")?.append(renderVllmThroughput());
+  resources.querySelector(".panel-header")?.append(renderVllmThroughput(true));
   resources.append(renderTelemetryGauges());
   append(layout, result, resources);
   applyRunPulse(result, run);
@@ -1064,24 +1074,25 @@ function applyRunPulse(result, run) {
   );
 }
 
-function renderVllmThroughput() {
+function renderVllmThroughput(includeSystemPower = false) {
   const result = element("div", "vllm-throughput");
   result.dataset.vllmThroughput = "true";
-  result.setAttribute("aria-label", "vLLM rolling token throughput");
+  result.setAttribute("aria-label", includeSystemPower ? "Model throughput and system power" : "vLLM rolling token throughput");
   append(
     result,
     throughputMetric("model", "MODEL"),
     throughputMetric("processing", "PROCESSING"),
     throughputMetric("generation", "GENERATION"),
+    includeSystemPower ? throughputMetric("system-power", "SYSTEM POWER", "— W") : null,
   );
   applyVllmThroughput(result, state.telemetry?.vllm || {});
   return result;
 }
 
-function throughputMetric(kind, label) {
+function throughputMetric(kind, label, initialValue = "— tok/s") {
   const metric = element("div", "vllm-throughput-metric");
   metric.dataset.throughput = kind;
-  append(metric, element("span", "vllm-throughput-label", label), element("strong", "vllm-throughput-value", "— tok/s"));
+  append(metric, element("span", "vllm-throughput-label", label), element("strong", "vllm-throughput-value", initialValue));
   return metric;
 }
 
@@ -1112,6 +1123,30 @@ function applyVllmThroughput(region, throughput) {
       : "— tok/s";
     metric.title = count ? `Running average across ${count} active samples` : "Waiting for active vLLM samples";
   }
+  applySystemPower(region);
+}
+
+function applySystemPower(region) {
+  const metric = region.querySelector('[data-throughput="system-power"]');
+  if (!metric) return;
+  const cpu = state.telemetry?.cpu;
+  const gpus = state.telemetry?.gpus || [];
+  const draws = [cpu?.power_draw_w, ...gpus.map((gpu) => gpu.power_draw_w)];
+  const limits = [state.telemetrySettings?.cpu_power_max_w, ...gpus.map((gpu) => gpu.power_limit_w)];
+  const valid = (value) => value !== null && value !== undefined && Number.isFinite(Number(value));
+  const complete = Boolean(cpu) && gpus.length > 0 && draws.every(valid) && limits.every(valid);
+  const current = complete ? draws.reduce((total, value) => total + Number(value), 0) : null;
+  const maximum = complete ? limits.reduce((total, value) => total + Number(value), 0) : null;
+  const percent = current !== null && maximum !== null && maximum > 0
+    ? Math.max(0, Math.min(100, (current / maximum) * 100))
+    : null;
+  const text = percent === null
+    ? "N/A"
+    : `${formatPercent(percent)} · ${current.toFixed(1)}/${maximum.toFixed(1)} W`;
+  metric.querySelector(".vllm-throughput-value").textContent = text;
+  metric.title = complete
+    ? "CPU package plus all reported NVIDIA GPU board power"
+    : "Waiting for complete CPU and GPU power telemetry";
 }
 
 function svgElement(tag, attributes = {}) {
@@ -1590,6 +1625,7 @@ function resourceGauge(key, label, vendor = "") {
   const memoryKind = key === "cpu" ? "RAM" : "VRAM";
   append(
     bars,
+    gaugeMetric("power", "POWER"),
     gaugeMetric("load", "LOAD"),
     gaugeMetric("memory", memoryKind),
     gaugeMetric("temperature", "TEMP"),
@@ -1628,6 +1664,18 @@ function applyResourceGauge(gauge, reading) {
   const isCpu = reading.key === "cpu";
   setHardwareVendor(gauge.querySelector(".gauge-vendor-slot"), hardwareVendor(reading.name, reading.key));
   setHardwareLabel(gauge.querySelector(".gauge-label"), hardwareLabel(reading));
+  const power = Number(reading.power_draw_w);
+  const powerLimit = Number(isCpu ? state.telemetrySettings?.cpu_power_max_w : reading.power_limit_w);
+  const powerPercent = Number.isFinite(power) && power >= 0 && Number.isFinite(powerLimit) && powerLimit > 0
+    ? Math.max(0, Math.min(100, (power / powerLimit) * 100))
+    : null;
+  gauge.style.setProperty("--power-load", powerPercent === null ? "0" : String(powerPercent));
+  const powerText = powerPercent === null
+    ? "N/A"
+    : `${formatPercent(powerPercent)} · ${power.toFixed(1)}/${powerLimit.toFixed(1)} W`;
+  const powerWell = gauge.querySelector(".gauge-power .gauge-horizontal-well");
+  gauge.querySelector(".gauge-power .gauge-value").textContent = powerText;
+  powerWell.setAttribute("aria-label", `${isCpu ? "CPU package" : "GPU board"} power ${powerText}`);
   const load = Number(reading.utilization_percent);
   gauge.style.setProperty("--load", Number.isFinite(load) ? String(Math.max(0, Math.min(100, load))) : "0");
   const loadWell = gauge.querySelector(".gauge-load .gauge-horizontal-well");
@@ -1820,6 +1868,7 @@ function renderLifetimeStats() {
     compactLifetimeMetric("Repeat attempts", stats.repeat_attempts),
     compactLifetimeMetric("Model loads", stats.model_loads),
     compactLifetimeMetric("Model load time", formatDuration(stats.model_load_duration_s)),
+    compactLifetimeMetric("Average power", Number.isFinite(Number(stats.average_power_w)) ? `${Number(stats.average_power_w).toFixed(1)} W` : "—"),
     compactLifetimeMetric("Reported cost", formatMoney(stats.cost)),
     compactLifetimeMetric("Quill time", formatDuration(stats.duration_s)),
     compactLifetimeMetric("Repositories", stats.repositories),
@@ -2227,6 +2276,22 @@ function renderProjectQueueOrder() {
     append(result, element("div", "empty-state queue-empty-state", "No ticket batches are queued."));
     return result;
   }
+  const actions = element("div", "project-queue-actions");
+  if (state.queuePage.removeResult) {
+    append(actions, element("span", "notice", state.queuePage.removeResult));
+  }
+  const remove = button(
+    loading("queue-remove") ? "Removing…" : "Remove From Queue",
+    "danger",
+    removeSelectedQueueItems,
+  );
+  remove.disabled = state.queuePage.queuedSelected.size === 0 || loading("queue-remove");
+  append(
+    actions,
+    element("span", "mono muted", `${state.queuePage.queuedSelected.size} selected`),
+    remove,
+  );
+  result.append(actions);
   const list = element("div", "project-batch-list");
   for (const batch of batches) {
     const batchPanel = element("section", "project-batch");
@@ -2245,6 +2310,27 @@ function renderProjectQueueOrder() {
     const table = element("table", "project-queue-table");
     const head = element("thead");
     const headRow = element("tr");
+    const batchRemovable = (batch.items || []).filter((item) =>
+      ["stabilizing", "pending"].includes(item.state));
+    const selectHead = element("th");
+    const selectAll = element("input");
+    selectAll.type = "checkbox";
+    selectAll.disabled = batchRemovable.length === 0;
+    selectAll.checked = batchRemovable.length > 0 && batchRemovable.every((item) =>
+      state.queuePage.queuedSelected.has(queuedItemKey(batch.repo, item.ticket)));
+    selectAll.indeterminate = !selectAll.checked && batchRemovable.some((item) =>
+      state.queuePage.queuedSelected.has(queuedItemKey(batch.repo, item.ticket)));
+    selectAll.setAttribute("aria-label", `Select removable tickets in batch ${batch.position}`);
+    selectAll.addEventListener("change", () => {
+      for (const item of batchRemovable) {
+        const key = queuedItemKey(batch.repo, item.ticket);
+        if (selectAll.checked) state.queuePage.queuedSelected.add(key);
+        else state.queuePage.queuedSelected.delete(key);
+      }
+      updateProjectQueueOrder();
+    });
+    selectHead.append(selectAll);
+    headRow.append(selectHead);
     for (const title of ["Order", "Ticket", "Title", "Epic", "Board", "State", "Run", "PR"]) {
       append(headRow, element("th", "", title));
     }
@@ -2253,6 +2339,25 @@ function renderProjectQueueOrder() {
     for (const item of batch.items || []) {
       const row = element("tr");
       if (["paused", "failed", "halted"].includes(item.state)) row.classList.add("project-queue-blocked");
+      const selectCell = element("td");
+      const selector = element("input");
+      const removableItem = ["stabilizing", "pending"].includes(item.state);
+      const key = queuedItemKey(batch.repo, item.ticket);
+      selector.type = "checkbox";
+      selector.checked = state.queuePage.queuedSelected.has(key);
+      selector.disabled = !removableItem;
+      selector.setAttribute(
+        "aria-label",
+        removableItem
+          ? `Select queued ticket #${item.ticket}`
+          : `Ticket #${item.ticket} cannot be removed after starting`,
+      );
+      selector.addEventListener("change", () => {
+        if (selector.checked) state.queuePage.queuedSelected.add(key);
+        else state.queuePage.queuedSelected.delete(key);
+        updateProjectQueueOrder();
+      });
+      selectCell.append(selector);
       const runCell = element("td");
       if (item.run_id) {
         const runLink = element("a", "run-link", item.run_id);
@@ -2262,6 +2367,7 @@ function renderProjectQueueOrder() {
       } else runCell.textContent = "—";
       append(
         row,
+        selectCell,
         element("td", "mono", `${batch.position}.${item.position}`),
         element("td", "mono", `#${item.ticket}`),
         element("td", "", item.title),
@@ -2275,7 +2381,7 @@ function renderProjectQueueOrder() {
       if (item.error) {
         const errorRow = element("tr", "project-queue-error-row");
         const cell = element("td");
-        cell.colSpan = 8;
+        cell.colSpan = 9;
         cell.append(diagnostic(item.error, "notice danger"));
         errorRow.append(cell);
         body.append(errorRow);
@@ -2288,6 +2394,60 @@ function renderProjectQueueOrder() {
   }
   result.append(list);
   return result;
+}
+
+function queuedItemKey(repo, ticket) {
+  return `${repo}#${ticket}`;
+}
+
+function pruneQueuedSelection() {
+  const available = new Set((state.projectQueue?.batches || []).flatMap((batch) =>
+    (batch.items || [])
+      .filter((item) => ["stabilizing", "pending"].includes(item.state))
+      .map((item) => queuedItemKey(batch.repo, item.ticket))));
+  state.queuePage.queuedSelected = new Set(
+    [...state.queuePage.queuedSelected].filter((key) => available.has(key)),
+  );
+}
+
+async function removeSelectedQueueItems() {
+  const selected = state.queuePage.queuedSelected;
+  const byRepo = new Map();
+  for (const batch of state.projectQueue?.batches || []) {
+    for (const item of batch.items || []) {
+      if (!selected.has(queuedItemKey(batch.repo, item.ticket))) continue;
+      if (!byRepo.has(batch.repo)) byRepo.set(batch.repo, []);
+      byRepo.get(batch.repo).push(Number(item.ticket));
+    }
+  }
+  const count = [...byRepo.values()].reduce((total, tickets) => total + tickets.length, 0);
+  if (!count) return;
+  if (!window.confirm(
+    `Remove ${count} selected ticket${count === 1 ? "" : "s"} from the queue and move them back to their prior Project status?`,
+  )) return;
+  setLoading("queue-remove", true);
+  updateProjectQueueOrder();
+  try {
+    const responses = await Promise.all([...byRepo].map(([repo, tickets]) =>
+      QuillApi.removeProjectQueueItems(repo, tickets)));
+    const results = responses.flatMap((response) => response.results || []);
+    const removed = results.filter((item) => item.removed);
+    const failed = results.filter((item) => !item.removed);
+    const summary = `${removed.length} ticket${removed.length === 1 ? "" : "s"} removed from Queue.`;
+    state.queuePage.removeResult = failed.length
+      ? `${summary} ${failed.map((item) => `#${item.ticket}: ${item.reason || "not removed"}`).join("; ")}`
+      : summary;
+    toast(summary, failed.length ? "warning" : "success");
+    await Promise.all([
+      refreshProjectQueue({ quiet: true }),
+      refreshQueueCandidates(state.queuePage.repo, { quiet: true }),
+    ]);
+  } catch (error) {
+    handleError(error, "project-queue");
+  } finally {
+    setLoading("queue-remove", false);
+    updateProjectQueueOrder();
+  }
 }
 
 function renderQueueCandidates() {
@@ -2820,6 +2980,7 @@ function renderRunInspector() {
     tabs.append(tab);
   }
   result.append(tabs);
+  if (canAnswerRun(state.runDetail.status)) result.append(renderDecisionForm(state.runDetail));
   const content = element("div", "run-inspector-content");
   content.dataset.runInspectorContent = "true";
   content.append(renderRunInspectorContent());
@@ -2900,7 +3061,6 @@ function renderRunStatus() {
     ["Updated", formatTime(run.updated_at).label],
   ]));
   if (run.error) append(fragment, diagnostic(runFailureMessage(run), "notice danger"));
-  if (canAnswerRun(run.status)) append(fragment, renderDecisionForm(run));
   const historyPanel = element("div", "run-status-history");
   append(historyPanel, element("h3", "", "Phase history"));
   const persistedHistory = (state.breakdown?.phase_executions || []).map((item) => {
@@ -2932,6 +3092,18 @@ function detailGrid(items) {
 function renderDecisionForm(run) {
   const form = element("form", "panel-stack");
   append(form, element("p", "notice warning", run.question || "This run is waiting for an operator decision."));
+  if (run.phase === "head_guard") {
+    const stop = element("button", "button warning", "Stop stale run");
+    stop.type = "submit";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      stop.disabled = true;
+      await mutation(() => QuillApi.stop(run.run_id), "Stale run stopped; queued work may continue");
+      await refreshRuns();
+    });
+    form.append(stop);
+    return form;
+  }
   const answer = field("Answer", "text", state.decisionDraft, "Enter the decision sent back to the pipeline");
   answer.input.addEventListener("input", () => { state.decisionDraft = answer.input.value; });
   const submit = element("button", "button warning", "Send decision");
@@ -3855,17 +4027,18 @@ function renderSettings() {
     "Settings",
     "Configure how live hardware telemetry is scaled. Raw measurements are not changed.",
   ));
-  const settingsPanel = panel("Temperature Ranges");
+  const settingsPanel = panel("Telemetry Ranges");
   const form = element("form", "settings-form");
   const fields = [
     ["CPU minimum (°C)", "cpu_temperature_min_c"],
     ["CPU maximum (°C)", "cpu_temperature_max_c"],
     ["GPU minimum (°C)", "gpu_temperature_min_c"],
     ["GPU maximum (°C)", "gpu_temperature_max_c"],
+    ["CPU power maximum (W)", "cpu_power_max_w"],
   ].map(([label, key]) => {
     const control = field(label, "number", state.telemetrySettings?.[key]);
-    control.input.min = "-20";
-    control.input.max = "150";
+    control.input.min = key === "cpu_power_max_w" ? "1" : "-20";
+    control.input.max = key === "cpu_power_max_w" ? "2000" : "150";
     control.input.step = "1";
     control.input.name = key;
     return control;

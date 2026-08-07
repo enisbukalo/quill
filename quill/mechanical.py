@@ -466,6 +466,29 @@ def step_pr_head_guard(ctx: RunContext, phase: PhaseDef, *, spawn: SpawnPhase) -
         )
         return PhaseResult(Outcome.CRASH, f"could not verify PR head: {exc}")
     if current != ctx.pr_head_sha:
+        try:
+            local = git.local_head_sha()
+        except GitError:
+            local = ""
+        if local and current == local:
+            previous = ctx.pr_head_sha
+            ctx.pr_head_sha = current
+            _record_mechanical(
+                ctx,
+                phase,
+                ContractStatus.COMPLETE,
+                {
+                    "pr": ctx.pr_number,
+                    "expected": previous,
+                    "observed": current,
+                    "matches": True,
+                    "already_published_by_run": True,
+                },
+            )
+            return PhaseResult(
+                Outcome.PASS,
+                f"PR head already matches this run's validated local HEAD at {current[:12]}",
+            )
         _record_mechanical(
             ctx,
             phase,

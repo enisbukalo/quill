@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +18,7 @@ from quill.runners import (
 )
 from quill.runners.opencode import OpencodeRunner
 from quill.runners.pi import PiRunner, extract_pi_receipt
+from quill.runners.git_guard import agent_environment
 from quill.runctx import PipelineDeps
 
 # -- registry ---------------------------------------------------------------------
@@ -151,6 +153,32 @@ def test_opencode_skill_directive_uses_slash_name_syntax() -> None:
 
 def test_runner_capacity_defaults_to_one() -> None:
     assert OpencodeRunner(directory=".").available_session_capacity("any-model") == 1
+
+
+def test_agent_git_guard_denies_mutations_outside_delivery_phases(tmp_path: Path) -> None:
+    git = tmp_path / "git"
+    git.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    git.chmod(0o700)
+    inherited = {"PATH": str(tmp_path)}
+
+    with agent_environment("update_impl", inherited) as environment:
+        wrapper = Path(environment["PATH"].split(":", 1)[0]) / "git"
+        result = subprocess.run(
+            [str(wrapper), "commit", "-m", "forbidden"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert result.returncode == 77
+    assert "only commit/commit_update may mutate Git" in result.stderr
+
+
+def test_agent_git_guard_leaves_delivery_phase_environment_unchanged(tmp_path: Path) -> None:
+    inherited = {"PATH": str(tmp_path), "EXAMPLE": "yes"}
+
+    with agent_environment("commit_update", inherited) as environment:
+        assert environment == inherited
 
 
 class _Loader:

@@ -263,6 +263,7 @@ class RunContext:
     pr_head_committed_at: str = ""
     feedback_digest: str = ""
     feedback_ids: tuple[str, ...] = ()
+    decisions: list[tuple[str, str]] = field(default_factory=list)
     feedback_threads: tuple[str, ...] = ()
     history: list[PhaseResult] = field(default_factory=list)
     #: Per-phase tool-call tally (``{"impl": {"edit": 24, "read": 31}}``), filled as each worker

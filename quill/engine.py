@@ -244,9 +244,12 @@ def run_phases(ctx: RunContext, *, start_phase: str | None = None) -> Event:
                 return _halt(ctx, reason="stop requested", phase=executed.id)
 
             if result.needs_decision:
-                ctx.on_event(events.needs_decision(result.question or "", phase=executed.id))
-                if ctx.answer_decision(result.question or "") is None:
+                question = result.question or ""
+                ctx.on_event(events.needs_decision(question, phase=executed.id))
+                answer = ctx.answer_decision(question)
+                if answer is None:
                     return _halt(ctx, reason="needs decision", phase=executed.id)
+                ctx.decisions.append((question, answer))
                 return run_phases(ctx, start_phase=executed.id)
 
             if result.outcome in (Outcome.CRASH, Outcome.GARBAGE, Outcome.FAILED, Outcome.BLOCK):
@@ -1065,58 +1068,63 @@ def _run_concurrent_audits(
         return result
 
     def run_lane(lane: PhaseDef, audit: AuditDef) -> PhaseResult:
-        if ctx.should_stop():
-            return PhaseResult(Outcome.CRASH, "stop requested before audit started")
-        started = _emit_started(ctx, lane)
-        findings = _audit_findings_name(phase, audit)
-        work_artifact = _review_notes_name(lane, audit.id) if phase.produces_contract else findings
-        task = _review_task(
-            ctx,
-            lane,
-            work_artifact,
-            verify=bool(revise_findings),
-            prior_findings=revise_findings,
-        )
-        result = _spawn_preloaded_llm(ctx, lane, model=model, task=task)
-        repaired = _repair_artifact_failure(
-            ctx,
-            lane,
-            model=model,
-            artifact=work_artifact,
-            result=result,
-        )
-        if phase.produces_contract:
-            repaired = _finalize_findings_contract(
+        def attempt() -> PhaseResult:
+            if ctx.should_stop():
+                return PhaseResult(Outcome.CRASH, "stop requested before audit started")
+            started = _emit_started(ctx, lane)
+            findings = _audit_findings_name(phase, audit)
+            work_artifact = (
+                _review_notes_name(lane, audit.id) if phase.produces_contract else findings
+            )
+            task = _review_task(
                 ctx,
                 lane,
-                model=model,
-                notes=work_artifact,
-                findings=findings,
-                result=repaired,
-                prior=revise_findings,
+                work_artifact,
                 verify=bool(revise_findings),
-                namespace=audit.id,
+                prior_findings=revise_findings,
             )
-        elif phase.structured_findings:
-            repaired = _resolve_structured_review(
+            result = _spawn_preloaded_llm(ctx, lane, model=model, task=task)
+            repaired = _repair_artifact_failure(
                 ctx,
                 lane,
                 model=model,
-                artifact=findings,
-                result=repaired,
-                namespace=audit.id,
+                artifact=work_artifact,
+                result=result,
             )
-        # Complete the lane while it still owns the worker slot. This makes the terminal event
-        # visible before the executor admits the next queued lane, rather than allowing its start
-        # event to race ahead of this completion in the coordinator thread.
-        _emit_done(
-            ctx,
-            lane,
-            verdict=_verdict_of(repaired),
-            started=started,
-            result=repaired,
-        )
-        return repaired
+            if phase.produces_contract:
+                repaired = _finalize_findings_contract(
+                    ctx,
+                    lane,
+                    model=model,
+                    notes=work_artifact,
+                    findings=findings,
+                    result=repaired,
+                    prior=revise_findings,
+                    verify=bool(revise_findings),
+                    namespace=audit.id,
+                )
+            elif phase.structured_findings:
+                repaired = _resolve_structured_review(
+                    ctx,
+                    lane,
+                    model=model,
+                    artifact=findings,
+                    result=repaired,
+                    namespace=audit.id,
+                )
+            # Complete the lane while it still owns the worker slot. This makes the terminal event
+            # visible before the executor admits the next queued lane, rather than allowing its
+            # start event to race ahead of this completion in the coordinator thread.
+            _emit_done(
+                ctx,
+                lane,
+                verdict=_verdict_of(repaired),
+                started=started,
+                result=repaired,
+            )
+            return repaired
+
+        return _run_with_fresh_attempts(ctx, lane, attempt)
 
     results: dict[str, PhaseResult] = {}
     with ThreadPoolExecutor(
@@ -2969,7 +2977,20 @@ def assemble_prompt(ctx: RunContext, phase: PhaseDef, task: str) -> str:
     skill_line = ctx.deps.skill_directive(list(phase.skills))
     skill_block = f"{skill_line}\n\n" if skill_line else ""
     memory_block = verified_memory_block(ctx, phase.id)
-    return f"{persona}\n\n{ticket_block}{path_block}\n{memory_block}{skill_block}{task}"
+    decision_block = ""
+    if ctx.decisions:
+        rendered = "\n".join(
+            f"- Question: {question}\n  Operator answer: {answer}"
+            for question, answer in ctx.decisions
+        )
+        decision_block = (
+            "OPERATOR DECISIONS (authoritative; incorporate them before continuing):\n"
+            f"{rendered}\n\n"
+        )
+    return (
+        f"{persona}\n\n{ticket_block}{path_block}\n{memory_block}{decision_block}"
+        f"{skill_block}{task}"
+    )
 
 
 def _ensure_ticket(ctx: RunContext) -> bool:

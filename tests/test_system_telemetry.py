@@ -10,11 +10,14 @@ import pytest
 from quill_api.settings import Settings
 from quill_api.telemetry import (
     CpuTelemetry,
+    GpuTelemetry,
     LinuxTelemetryReader,
+    PerfCpuPowerSampler,
     SystemTelemetryMonitor,
     SystemTelemetrySnapshot,
     VllmThroughputSampler,
     _vllm_counters,
+    combined_power_draw_w,
 )
 
 
@@ -90,7 +93,21 @@ def test_snapshot_serializes_tuple_gpus_as_json_compatible_data() -> None:
         "memory_total_mb": 32768.0,
         "name": None,
         "fan_percent": None,
+        "power_draw_w": None,
     }
+
+
+def test_combined_power_requires_cpu_and_every_reported_gpu() -> None:
+    complete = SystemTelemetrySnapshot(
+        cpu=CpuTelemetry(power_draw_w=100.0),
+        gpus=(
+            GpuTelemetry(0, "GPU 0", power_draw_w=60.0),
+            GpuTelemetry(1, "GPU 1", power_draw_w=65.0),
+        ),
+    )
+    assert combined_power_draw_w(complete) == 225.0
+    assert combined_power_draw_w(replace(complete, cpu=CpuTelemetry())) is None
+    assert combined_power_draw_w(replace(complete, gpus=())) is None
 
 
 def test_reader_reports_configured_cpu_pwm_as_percent(tmp_path: Path) -> None:
@@ -127,12 +144,17 @@ def test_gpu_fallback_reports_nvidia_smi_fan_percent(monkeypatch) -> None:
 
     def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
         command_seen.extend(command)
-        return subprocess.CompletedProcess(command, 0, "0, Example GPU, 25, 45, 1024, 8192, 37\n")
+        return subprocess.CompletedProcess(
+            command, 0, "0, Example GPU, 25, 45, 1024, 8192, 37, 62.5, 180\n"
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     reader = LinuxTelemetryReader(VllmThroughputSampler("http://vllm.example:8000"))
 
-    assert reader._gpus(10.0)[0].fan_percent == 37.0
+    gpu = reader._gpus(10.0)[0]
+    assert gpu.fan_percent == 37.0
+    assert gpu.power_draw_w == 62.5
+    assert gpu.power_limit_w == 180.0
     assert "fan.speed" in command_seen[1]
 
 
@@ -168,12 +190,35 @@ def test_unsupported_nvml_fan_does_not_hide_other_gpu_metrics() -> None:
         def nvmlDeviceGetFanSpeed(_handle: int) -> float:
             raise RuntimeError("not supported")
 
+        @staticmethod
+        def nvmlDeviceGetPowerUsage(_handle: int) -> int:
+            return 62500
+
+        @staticmethod
+        def nvmlDeviceGetEnforcedPowerLimit(_handle: int) -> int:
+            return 180000
+
     reader = LinuxTelemetryReader(VllmThroughputSampler("http://vllm.example:8000"))
     reader._nvml = NvmlWithoutFan()
 
     gpu = reader._gpus(10.0)[0]
     assert gpu.utilization_percent == 12.0
     assert gpu.fan_percent is None
+    assert gpu.power_draw_w == 62.5
+    assert gpu.power_limit_w == 180.0
+
+
+def test_perf_cpu_power_sampler_derives_watts_from_interval_energy() -> None:
+    now = 10.0
+    sampler = PerfCpuPowerSampler(interval_s=0.25, monotonic=lambda: now)
+
+    sampler._record_perf_line("0.250,15.625,Joules,power/energy-pkg/,\n")
+    assert sampler.power_draw_w() == 62.5
+    sampler._record_perf_line("diagnostic text\n")
+    assert sampler.power_draw_w() == 62.5
+
+    now = 11.1
+    assert sampler.power_draw_w() is None
 
 
 def test_reader_reports_cpu_model_name(monkeypatch) -> None:
