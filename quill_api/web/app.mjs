@@ -1136,7 +1136,7 @@ function applySystemPower(region) {
   const valid = (value) => value !== null && value !== undefined && Number.isFinite(Number(value));
   const complete = Boolean(cpu) && gpus.length > 0 && draws.every(valid) && limits.every(valid);
   const current = complete ? draws.reduce((total, value) => total + Number(value), 0) : null;
-  const maximum = complete ? limits.reduce((total, value) => total + Number(value), 0) : null;
+  const maximum = complete ? Math.min(limits.reduce((total, value) => total + Number(value), 0), 850) : null;
   const percent = current !== null && maximum !== null && maximum > 0
     ? Math.max(0, Math.min(100, (current / maximum) * 100))
     : null;
@@ -1618,11 +1618,26 @@ function gaugeMetric(kind, label) {
   return metricRow;
 }
 
+function gaugeMetricCompound(kind, label) {
+  const wrapper = element("div", `gauge-metric-compound gauge-${kind}`);
+  wrapper.dataset.metric = kind;
+  const labelEl = element("span", "gauge-pci-label", label);
+  const rxWell = element("div", "gauge-horizontal-well gauge-pci-rx-well");
+  rxWell.setAttribute("role", "img");
+  append(rxWell, element("div", "gauge-horizontal-fill"), element("strong", "gauge-value", "\u2014"));
+  const txWell = element("div", "gauge-horizontal-well gauge-pci-tx-well");
+  txWell.setAttribute("role", "img");
+  append(txWell, element("div", "gauge-horizontal-fill"), element("strong", "gauge-value", "\u2014"));
+  append(wrapper, labelEl, rxWell, txWell);
+  return wrapper;
+}
+
 function resourceGauge(key, label, vendor = "") {
   const gauge = element("div", "resource-gauge");
   gauge.dataset.gauge = key;
   const bars = element("div", "gauge-bars");
   const memoryKind = key === "cpu" ? "RAM" : "VRAM";
+  const isCpu = key === "cpu";
   append(
     bars,
     gaugeMetric("power", "POWER"),
@@ -1630,6 +1645,7 @@ function resourceGauge(key, label, vendor = "") {
     gaugeMetric("memory", memoryKind),
     gaugeMetric("temperature", "TEMP"),
     gaugeMetric("fan", "FAN"),
+    isCpu ? gaugeMetric("pci-lanes", "PCI LANES") : gaugeMetricCompound("pci", "PCI"),
   );
   const labelNode = element("span", "gauge-label");
   const vendorNode = element("span", "gauge-vendor-slot");
@@ -1725,6 +1741,55 @@ function applyResourceGauge(gauge, reading) {
   const fanWell = gauge.querySelector(".gauge-fan .gauge-horizontal-well");
   gauge.querySelector(".gauge-fan .gauge-value").textContent = fanText;
   fanWell.setAttribute("aria-label", `${isCpu ? "CPU" : `GPU ${gpuIndex + 1}`} fan speed ${fanText}`);
+  // PCI lanes (CPU) or PCI throughput (GPU)
+  if (isCpu) {
+    const lanesUsed = Number(reading.pci_lanes_used) || 0;
+    const lanesAvail = Number(reading.pci_lanes_available) || 0;
+    const lanesPercent = lanesAvail > 0 ? Math.max(0, Math.min(100, (lanesUsed / lanesAvail) * 100)) : 0;
+    const lanesWell = gauge.querySelector(".gauge-pci-lanes .gauge-horizontal-well");
+    if (lanesWell) {
+      lanesWell.style.setProperty("--bar-load", String(lanesPercent));
+      lanesWell.style.setProperty("--bar-gradient", "linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%)");
+    }
+    gauge.querySelector(".gauge-pci-lanes .gauge-value").textContent = `${lanesUsed} used / ${lanesAvail} available`;
+    lanesWell.setAttribute("aria-label", `PCI lanes ${lanesUsed} used / ${lanesAvail} available`);
+  } else {
+    const rx = Number(reading.pci_rx_gb_s);
+    const tx = Number(reading.pci_tx_gb_s);
+    const rxMax = Number(reading.pci_rx_max_gb_s);
+    const txMax = Number(reading.pci_tx_max_gb_s);
+    const gen = reading.pci_gen;
+    const lanes = reading.pci_lanes;
+    const pciLabel = gauge.querySelector(".gauge-pci-label");
+    if (pciLabel && gen && lanes) {
+      pciLabel.textContent = `PCIe${gen}x${lanes}`;
+    }
+    const rxPercent = Number.isFinite(rx) && Number.isFinite(rxMax) && rxMax > 0
+      ? Math.max(0, Math.min(100, (rx / rxMax) * 100)) : 0;
+    const txPercent = Number.isFinite(tx) && Number.isFinite(txMax) && txMax > 0
+      ? Math.max(0, Math.min(100, (tx / txMax) * 100)) : 0;
+    const compound = gauge.querySelector(".gauge-pci");
+    if (compound) {
+      const rxWell = compound.querySelector(".gauge-pci-rx-well");
+      const txWell = compound.querySelector(".gauge-pci-tx-well");
+      if (rxWell) {
+        rxWell.style.setProperty("--bar-load", String(rxPercent));
+        rxWell.style.setProperty("--bar-gradient", "linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%)");
+      }
+      if (txWell) {
+        txWell.style.setProperty("--bar-load", String(txPercent));
+        txWell.style.setProperty("--bar-gradient", "linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%)");
+      }
+      const rxVal = compound.querySelector(".gauge-pci-rx-well .gauge-value");
+      const txVal = compound.querySelector(".gauge-pci-tx-well .gauge-value");
+      if (rxVal && Number.isFinite(rx) && Number.isFinite(rxMax)) {
+        rxVal.textContent = `RX \u00b7 ${rx.toFixed(2)}/${rxMax.toFixed(2)} GB/s`;
+      }
+      if (txVal && Number.isFinite(tx) && Number.isFinite(txMax)) {
+        txVal.textContent = `TX \u00b7 ${tx.toFixed(2)}/${txMax.toFixed(2)} GB/s`;
+      }
+    }
+  }
 }
 
 function updateProgressRegions(runId) {

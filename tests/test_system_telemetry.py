@@ -94,6 +94,8 @@ def test_snapshot_serializes_tuple_gpus_as_json_compatible_data() -> None:
         "name": None,
         "fan_percent": None,
         "power_draw_w": None,
+        "pci_lanes_used": 0,
+        "pci_lanes_available": 0,
     }
 
 

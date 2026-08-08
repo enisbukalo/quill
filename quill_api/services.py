@@ -38,6 +38,7 @@ from quill_api.telemetry import (
     LinuxTelemetryReader,
     ModelSwitchTelemetry,
     SystemTelemetryMonitor,
+    SystemTelemetrySnapshot,
     VllmThroughputSampler,
     combined_power_draw_w,
 )
@@ -86,9 +87,7 @@ class Services:
             ),
             self.settings.telemetry_interval_s,
             switch_state=lambda: ModelSwitchTelemetry(**asdict(self.model_switcher.state)),
-            on_sample=lambda snapshot: self.history.record_system_power_sample(
-                combined_power_draw_w(snapshot), snapshot.sampled_at
-            ),
+            on_sample=lambda snapshot: self._record_power_if_active(snapshot),
         )
 
         self.manager = RunManager(
@@ -138,6 +137,16 @@ class Services:
             "queue": queue_view(self.store, self.queue.position, self.queue.depth).model_dump(),
             "project_queue": self.project_queue.view().model_dump(),
         }
+
+    def _record_power_if_active(self, snapshot: SystemTelemetrySnapshot) -> None:
+        """Record system power sample only when a run is active."""
+        active = self.store.active
+        if active is not None:
+            self.history.record_system_power_sample(
+                combined_power_draw_w(snapshot), snapshot.sampled_at
+            )
+        else:
+            self.history.record_system_power_sample(None, None)
 
     def _publish_run(self, event: dict[str, object], state: object) -> None:
         from quill_api.state import RunState

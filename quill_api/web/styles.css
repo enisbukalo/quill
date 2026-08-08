@@ -462,7 +462,7 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .gauge-label { display: flex; flex-direction: column; height: 2.5em; justify-content: center; overflow: hidden; text-align: center; letter-spacing: .055em; line-height: 1.25; }
 .gauge-label > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gauge-bars { display: grid; gap: .42rem; width: 100%; }
-.gauge-metric { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: .45rem; }
+.gauge-metric { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: .45rem .225rem; }
 .gauge-metric-label { color: var(--muted); font-size: .48rem; letter-spacing: .08em; }
 .gauge-horizontal-well { position: relative; height: 22px; overflow: hidden; border: 1px solid var(--bar-color); border-radius: 6px; color: var(--bar-color); background: rgba(2,2,12,.86); box-shadow: inset 0 0 10px rgba(0,0,0,.72), 0 0 7px color-mix(in srgb, var(--bar-color) 30%, transparent); }
 .gauge-horizontal-fill { position: absolute; inset: 2px; border-radius: 3px; background: var(--bar-gradient, linear-gradient(to right, var(--bar-color), var(--bar-end))); box-shadow: 0 0 9px var(--bar-color); clip-path: inset(0 calc(100% - var(--bar-load) * 1%) 0 0); }
@@ -472,6 +472,18 @@ tbody tr:hover td { background: rgba(155,108,255,.045); }
 .gauge-memory { --bar-color: var(--memory-color, var(--green)); --bar-load: var(--memory-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }
 .gauge-temperature { --bar-color: var(--temperature-color, var(--green)); --bar-load: var(--temperature-load); --bar-gradient: linear-gradient(to right, var(--green) 0%, var(--amber) 55%, var(--red) 100%); }
 .gauge-fan { --bar-color: var(--cyan); --bar-end: var(--violet); --bar-load: var(--fan-load); }
+
+/* Compound PCI widget: label spans two bar rows */
+.gauge-metric-compound { display: grid; grid-template-columns: 42px 1fr; grid-template-rows: auto auto; gap: .15rem .225rem; align-items: center; }
+.gauge-metric-compound .gauge-pci-label { grid-row: 1 / 3; place-self: center; font-size: .48rem; letter-spacing: .08em; color: var(--muted); }
+.gauge-metric-compound .gauge-pci-rx-well { --bar-color: var(--green); }
+.gauge-metric-compound .gauge-pci-tx-well { --bar-color: var(--green); }
+
+/* CPU PCI lanes row */
+.gauge-pci-lanes { --bar-color: var(--green); }
+
+/* System power badge: tighter left gap */
+.vllm-throughput-metric[data-throughput="system-power"] { min-width: 140px; text-align: left; }
 .telemetry-empty { color: var(--muted); font-size: .55rem; align-self: center; max-width: 9rem; }
 .settings-form { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: .8rem; align-items: end; max-width: 760px; }
 .settings-form .button { justify-self: start; }

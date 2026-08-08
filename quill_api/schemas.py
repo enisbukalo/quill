@@ -680,6 +680,8 @@ class CpuTelemetryInfo(BaseModel):
     name: str | None = None
     fan_percent: float | None = None
     power_draw_w: float | None = None
+    pci_lanes_used: int = 0
+    pci_lanes_available: int = 0
 
 
 class GpuTelemetryInfo(BaseModel):
@@ -693,6 +695,12 @@ class GpuTelemetryInfo(BaseModel):
     fan_percent: float | None = None
     power_draw_w: float | None = None
     power_limit_w: float | None = None
+    pci_rx_gb_s: float | None = None
+    pci_tx_gb_s: float | None = None
+    pci_rx_max_gb_s: float | None = None
+    pci_tx_max_gb_s: float | None = None
+    pci_gen: int | None = None
+    pci_lanes: int | None = None
 
 
 class VllmThroughputTelemetryInfo(BaseModel):

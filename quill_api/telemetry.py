@@ -30,6 +30,8 @@ class CpuTelemetry:
     name: str | None = None
     fan_percent: float | None = None
     power_draw_w: float | None = None
+    pci_lanes_used: int = 0
+    pci_lanes_available: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,12 @@ class GpuTelemetry:
     fan_percent: float | None = None
     power_draw_w: float | None = None
     power_limit_w: float | None = None
+    pci_rx_gb_s: float | None = None
+    pci_tx_gb_s: float | None = None
+    pci_rx_max_gb_s: float | None = None
+    pci_tx_max_gb_s: float | None = None
+    pci_gen: int | None = None
+    pci_lanes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +346,154 @@ class PerfCpuPowerSampler:
         self._sampled_at = self._monotonic()
 
 
+class PcieThroughputSampler:
+    """Continuously sample PCIe RX/TX throughput per GPU from nvidia-smi dmon."""
+
+    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._monotonic = monotonic
+        self._process: subprocess.Popen[str] | None = None
+        self._thread: threading.Thread | None = None
+        self._latest: dict[int, tuple[float, float]] = {}
+        self._sampled_at = -math.inf
+
+    def start(self) -> None:
+        if self._process is not None:
+            return
+        command = [
+            "nvidia-smi",
+            "dmon",
+            "-s",
+            "t",
+            "-d",
+            "1",
+        ]
+        try:
+            self._process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except OSError:
+            self._process = None
+            return
+        self._thread = threading.Thread(
+            target=self._read_output,
+            name="quill-pcie-throughput",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        process, self._process = self._process, None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._thread = None
+        self._latest.clear()
+
+    def throughput(self, index: int) -> tuple[float, float] | None:
+        """Return (rx_gb_s, tx_gb_s) for the given GPU index, or None if stale."""
+        if self._monotonic() - self._sampled_at > 5.0:
+            return None
+        return self._latest.get(index)
+
+    def _read_output(self) -> None:
+        process = self._process
+        if process is None or process.stdout is None:
+            return
+        for line in process.stdout:
+            self._parse_dmon_line(line)
+
+    def _parse_dmon_line(self, line: str) -> None:
+        """Parse one nvidia-smi dmon -s t output line."""
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            return
+        parts = stripped.split()
+        if len(parts) < 3:
+            return
+        try:
+            index = int(parts[0])
+            rx_mb = float(parts[1])
+            tx_mb = float(parts[2])
+        except (ValueError, IndexError):
+            return
+        self._latest[index] = (rx_mb / 1024.0, tx_mb / 1024.0)
+        self._sampled_at = self._monotonic()
+
+
+def _parse_link_speed(speed_str: str) -> float | None:
+    """Extract GT/s value from sysfs link speed string like '8.0 GT/s PCIe'."""
+    try:
+        return float(speed_str.split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def _derive_generation(gt_s: float) -> int | None:
+    """Map GT/s to PCIe generation: 8.0 -> 3, 16.0 -> 4, 32.0 -> 5."""
+    if abs(gt_s - 8.0) < 1.0:
+        return 3
+    if abs(gt_s - 16.0) < 2.0:
+        return 4
+    if abs(gt_s - 32.0) < 4.0:
+        return 5
+    return None
+
+
+def _scan_endpoint_lanes(sysfs_root: Path = Path("/sys/bus/pci/devices")) -> tuple[int, int]:
+    """Scan PCIe endpoint devices for used/available lane counts.
+
+    Returns (used_lanes, available_lanes) summing only endpoint devices (GPU, NVMe, NIC, storage).
+    Deduplicates devices sharing the same bus (e.g. GPU audio shares slot with GPU graphics).
+    """
+    seen_buses: set[str] = set()
+    used = 0
+    available = 0
+    try:
+        for dev_dir in sorted(sysfs_root.iterdir()):
+            bus_addr = dev_dir.name
+            bus_part = bus_addr.split(":")[1] if ":" in bus_addr else ""
+            if bus_part in seen_buses:
+                continue
+            try:
+                class_hex = (dev_dir / "class").read_text().strip()
+            except OSError:
+                continue
+            # Filter to endpoint devices only
+            if not (
+                class_hex.startswith("0x03")  # GPU/display
+                or class_hex == "0x010802"  # NVMe
+                or class_hex.startswith("0x02")  # Network/NIC
+                or (
+                    class_hex.startswith("0x01") and not class_hex.startswith("0x0106")
+                )  # Storage (exclude SATA AHCI)
+            ):
+                continue
+            try:
+                current_width = int((dev_dir / "current_link_width").read_text().strip())
+            except OSError:
+                current_width = 0
+            try:
+                max_width = int((dev_dir / "max_link_width").read_text().strip())
+            except OSError:
+                max_width = current_width
+            used += current_width
+            available += max_width
+            seen_buses.add(bus_part)
+    except OSError:
+        pass
+    return used, available
+
+
 class LinuxTelemetryReader:
     """Read Linux CPU counters/sensors and NVIDIA metrics without blocking request handlers."""
 
@@ -356,6 +512,7 @@ class LinuxTelemetryReader:
         self._cpu_fan_pwm_channel = cpu_fan_pwm_channel
         self._hwmon_root = hwmon_root
         self._cpu_power = cpu_power or PerfCpuPowerSampler()
+        self._pcie_sampler = PcieThroughputSampler()
         self._nvml: Any = None
         self._last_fallback = 0.0
         self._fallback_gpus: tuple[GpuTelemetry, ...] = ()
@@ -364,6 +521,7 @@ class LinuxTelemetryReader:
     def start(self) -> None:
         self._vllm.start()
         self._cpu_power.start()
+        self._pcie_sampler.start()
         try:
             import pynvml  # type: ignore[import-untyped]
 
@@ -375,6 +533,7 @@ class LinuxTelemetryReader:
     def stop(self) -> None:
         self._vllm.stop()
         self._cpu_power.stop()
+        self._pcie_sampler.stop()
         if self._nvml is not None:
             try:
                 self._nvml.nvmlShutdown()
@@ -385,6 +544,7 @@ class LinuxTelemetryReader:
     def sample(self) -> SystemTelemetrySnapshot:
         now = time.time()
         temperature = self._cpu_temperature()
+        lanes_used, lanes_available = _scan_endpoint_lanes()
         return SystemTelemetrySnapshot(
             sampled_at=now,
             cpu=CpuTelemetry(
@@ -394,6 +554,8 @@ class LinuxTelemetryReader:
                 self._cpu_name,
                 fan_percent=self._cpu_fan_percent(),
                 power_draw_w=self._cpu_power.power_draw_w(),
+                pci_lanes_used=lanes_used,
+                pci_lanes_available=lanes_available,
             ),
             gpus=self._gpus(now),
             vllm=self._vllm.sample(),
@@ -537,6 +699,7 @@ class LinuxTelemetryReader:
                             fan_percent=self._nvml_fan_percent(handle),
                             power_draw_w=self._nvml_power_w(handle),
                             power_limit_w=self._nvml_power_limit_w(handle),
+                            **self._nvml_pci_info(handle, index),
                         )
                     )
                 return tuple(result)
@@ -570,6 +733,7 @@ class LinuxTelemetryReader:
                         _number(row[6]),
                         _number(row[7]) if len(row) > 7 else None,
                         _number(row[8]) if len(row) > 8 else None,
+                        **self._fallback_pci_info(int(row[0])),
                     )
                 )
             self._fallback_gpus = tuple(sorted(rows, key=lambda gpu: gpu.index))
@@ -600,6 +764,43 @@ class LinuxTelemetryReader:
         except Exception:  # noqa: BLE001 - unsupported power limits are a valid state
             return None
         return round(value, 1) if value > 0 else None
+
+    def _nvml_pci_info(self, handle: object, index: int) -> dict:
+        """Return PCIe throughput and link info for one GPU via NVML + sysfs."""
+        info: dict = {}
+        # Throughput from dmon sampler
+        tp = self._pcie_sampler.throughput(index)
+        if tp is not None:
+            info["pci_rx_gb_s"] = round(tp[0], 2)
+            info["pci_tx_gb_s"] = round(tp[1], 2)
+        # Link info from sysfs
+        try:
+            pci_info = self._nvml.nvmlDeviceGetPciInfo(handle)
+            bus_addr = f"0000:{pci_info.bus:02x}:00.0"
+            sysfs = Path(f"/sys/bus/pci/devices/{bus_addr}")
+            speed_str = (sysfs / "current_link_speed").read_text().strip()
+            gt_s = _parse_link_speed(speed_str)
+            if gt_s is not None:
+                info["pci_gen"] = _derive_generation(gt_s)
+            lanes_str = (sysfs / "current_link_width").read_text().strip()
+            lanes = int(lanes_str)
+            info["pci_lanes"] = lanes
+            if gt_s is not None:
+                max_gb_s = round(gt_s * lanes / 8, 2)
+                info["pci_rx_max_gb_s"] = max_gb_s
+                info["pci_tx_max_gb_s"] = max_gb_s
+        except Exception:  # noqa: BLE001
+            pass
+        return info
+
+    def _fallback_pci_info(self, index: int) -> dict:
+        """Return PCIe throughput for fallback path (no NVML)."""
+        info: dict = {}
+        tp = self._pcie_sampler.throughput(index)
+        if tp is not None:
+            info["pci_rx_gb_s"] = round(tp[0], 2)
+            info["pci_tx_gb_s"] = round(tp[1], 2)
+        return info
 
 
 class SystemTelemetryMonitor:
