@@ -737,6 +737,22 @@ def test_all_prior_blockers_escalated_returns_escapte(tmp_path: Path) -> None:
     assert "F-001" in result.message
 
 
+def test_open_escalated_findings_remain_blocking_when_escalation_is_disabled(
+    tmp_path: Path,
+) -> None:
+    finding = _prior_critical()
+    finding["escalation_reason"] = "Planning should choose between two approaches"
+    _write(tmp_path / "review.md", [finding])
+
+    result = deterministic_gate_result(
+        tmp_path / "review.md",
+        PhaseResult(Outcome.DONE, ""),
+        allow_escalation=False,
+    )
+
+    assert result.outcome is Outcome.BLOCK
+
+
 def test_one_escalated_one_still_open_returns_block(tmp_path: Path) -> None:
     """Mixed: one escalated, one still OPEN → BLOCK (not ESCALATE)."""
     prior = (

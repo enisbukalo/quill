@@ -195,6 +195,32 @@ def _events_of(ctx: RunContext, etype: str) -> list[dict]:
     return [e for e in _EVENTS[id(ctx)] if e["type"] == etype]
 
 
+def test_research_escalation_runs_the_immediate_next_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    phases = [
+        PhaseDef(id="research_gate", type="reviewer"),
+        PhaseDef(id="plan", type="producer"),
+        PhaseDef(id="review_plan", type="reviewer"),
+    ]
+    ctx = _ctx(tmp_path, _config(tmp_path, phases), _Spawn({}), _FakeLoader())
+    executed: list[str] = []
+
+    def run_phase(_ctx: RunContext, phase: PhaseDef) -> PhaseResult:
+        executed.append(phase.id)
+        if phase.id == "research_gate":
+            return PhaseResult(Outcome.ESCALATE, "decision belongs in planning")
+        return PhaseResult(Outcome.DONE, "done")
+
+    monkeypatch.setattr(engine, "_run_phase", run_phase)
+
+    final = engine.run_phases(ctx)
+
+    assert final["type"] == "run_done"
+    assert executed == ["research_gate", "plan", "review_plan"]
+    assert _events_of(ctx, "escalated")[0]["to_phase"] == "plan"
+
+
 def test_concurrent_audits_share_one_load_and_overlap_execution(tmp_path: Path) -> None:
     audits = (
         AuditDef("architecture", "Requirements + architecture", "architecture.md", "qwen"),

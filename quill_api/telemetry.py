@@ -12,13 +12,22 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
 
 
 _VLLM_METRICS_INTERVAL_SECONDS = 0.25
 _VLLM_RATE_WINDOW = 100
+
+
+class _PciInfo(TypedDict, total=False):
+    pci_rx_gb_s: float | None
+    pci_tx_gb_s: float | None
+    pci_rx_max_gb_s: float | None
+    pci_tx_max_gb_s: float | None
+    pci_gen: int | None
+    pci_lanes: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -765,9 +774,9 @@ class LinuxTelemetryReader:
             return None
         return round(value, 1) if value > 0 else None
 
-    def _nvml_pci_info(self, handle: object, index: int) -> dict:
+    def _nvml_pci_info(self, handle: object, index: int) -> _PciInfo:
         """Return PCIe throughput and link info for one GPU via NVML + sysfs."""
-        info: dict = {}
+        info: _PciInfo = {}
         # Throughput from dmon sampler
         tp = self._pcie_sampler.throughput(index)
         if tp is not None:
@@ -793,9 +802,9 @@ class LinuxTelemetryReader:
             pass
         return info
 
-    def _fallback_pci_info(self, index: int) -> dict:
+    def _fallback_pci_info(self, index: int) -> _PciInfo:
         """Return PCIe throughput for fallback path (no NVML)."""
-        info: dict = {}
+        info: _PciInfo = {}
         tp = self._pcie_sampler.throughput(index)
         if tp is not None:
             info["pci_rx_gb_s"] = round(tp[0], 2)

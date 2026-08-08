@@ -325,6 +325,7 @@ def deterministic_gate_result(
     round_index: int = 0,
     carried_ids: frozenset[str] | None = None,
     final_round: bool = False,
+    allow_escalation: bool = True,
 ) -> PhaseResult:
     """Compute PASS/BLOCK from findings; reject malformed or incomplete reconciliation.
 
@@ -442,7 +443,7 @@ def deterministic_gate_result(
         # Escalation: if every blocker carries an escalation_reason, the gate has determined
         # these are decision-points rather than defects. Route directly to planning.
         all_escalated = all(b.escalation_reason for b in blockers)
-        if all_escalated:
+        if allow_escalation and all_escalated:
             summary = "; ".join(
                 f"{finding.id} ({finding.severity}): {finding.title}" for finding in blockers
             )
@@ -459,7 +460,7 @@ def deterministic_gate_result(
     # Escalation: all prior blockers are now RESOLVED with an escalation_reason.
     # The gate has determined these are decision-points for planning, not defects for research.
     prior_blocks = {f.id for f in prior if f.blocks}
-    if prior_blocks:
+    if allow_escalation and prior_blocks:
         escalated_ids = {
             f.id
             for f in current

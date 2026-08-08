@@ -237,6 +237,7 @@ def run_phases(ctx: RunContext, *, start_phase: str | None = None) -> Event:
             if len(group) > 1
             else [(phase, _run_phase(ctx, phase))]
         )
+        escalated_to: int | None = None
         for executed, result in executions:
             ctx.history.append(result)
 
@@ -274,8 +275,11 @@ def run_phases(ctx: RunContext, *, start_phase: str | None = None) -> Event:
                         message=result.message,
                     )
                 )
-                phase_index = next_idx
-                continue
+                escalated_to = next_idx
+                break
+        if escalated_to is not None:
+            phase_index = escalated_to
+            continue
         phase_index += len(group)
 
     done = events.run_done(pr_url=ctx.pr_url)
@@ -908,6 +912,7 @@ def _findings_projection_validator(
                 round_index=gate_round.index,
                 carried_ids=gate_round.carried_ids,
                 final_round=gate_round.final,
+                allow_escalation=phase.id == "research_gate",
             )
         return deterministic_review_result(path, receipt, namespace=namespace)
 
@@ -2026,6 +2031,7 @@ def _resolve_structured_gate(
             round_index=gate_round.index,
             carried_ids=gate_round.carried_ids,
             final_round=gate_round.final,
+            allow_escalation=phase.id == "research_gate",
         )
 
     if result.outcome in (Outcome.CRASH, Outcome.FAILED, Outcome.NEEDS_DECISION):
